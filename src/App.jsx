@@ -67,7 +67,7 @@ function Spinner({msg}) {
 // ══════════════════════════════════════════
 // TAB 1: PURCHASING PRIORITIES
 // ══════════════════════════════════════════
-function PurchasingTab({cores, bundles, vendors, sales, fees, filter}) {
+function PurchasingTab({cores, bundles, vendors, sales, fees, filter, onCoreClick}) {
   const [view, setView] = useState("core");
   const [sort, setSort] = useState({field:"doc", dir:"asc"});
   const [venFilter, setVenFilter] = useState("");
@@ -124,8 +124,18 @@ function PurchasingTab({cores, bundles, vendors, sales, fees, filter}) {
       const docAfter = c.dsr > 0 ? c.doc + (need / c.dsr) : c.doc;
       return {...c, lt, st, allIn, need, needCost, docAfter, ...cs};
     }).filter(c => {
-      if (filter === "active" && (c.active !== "Yes" || (c.ignoreUntil && new Date(c.ignoreUntil) > new Date()))) return false;
-      if (filter === "ignored" && !(c.ignoreUntil && new Date(c.ignoreUntil) > new Date())) return false;
+      const isActive = c.active === "Yes";
+      const isIgnored = c.ignoreUntil && new Date(c.ignoreUntil) > new Date();
+      const isVisible = c.visible === "Yes";
+      
+      // Each toggle: if ON, include items matching that flag. If all OFF, show nothing.
+      let show = false;
+      if (filter.active && isActive && !isIgnored) show = true;
+      if (filter.ignored && isIgnored) show = true;
+      if (filter.visible && isVisible && !isActive) show = true;
+      // If active+visible both on, show active OR visible
+      if (filter.active && filter.visible && (isActive || isVisible) && !isIgnored) show = true;
+      if (!show) return false;
       if (venFilter && c.ven !== venFilter) return false;
       if (statusFilter && c.st !== statusFilter) return false;
       if (search && !c.id.toLowerCase().includes(search.toLowerCase()) && !c.ti.toLowerCase().includes(search.toLowerCase())) return false;
@@ -228,7 +238,7 @@ function PurchasingTab({cores, bundles, vendors, sales, fees, filter}) {
               {sorted.map(c=>(
                 <tr key={c.id} className="hover:bg-gray-800/40 transition-colors">
                   <td className="px-2 py-1.5"><StatusDot status={c.st}/></td>
-                  <td className="px-2 py-1.5 font-mono text-blue-400">{c.id}</td>
+                  <td className="px-2 py-1.5 font-mono text-blue-400 cursor-pointer hover:text-blue-300 hover:underline" onClick={()=>onCoreClick?.(c.id)}>{c.id}</td>
                   <td className="px-2 py-1.5 text-gray-300 max-w-[120px] truncate">{c.ven}</td>
                   <td className="px-2 py-1.5 text-gray-200 max-w-[200px] truncate">{c.ti}</td>
                   <td className="px-2 py-1.5 text-right">{fmt(c.dsr,1)}</td>
@@ -314,11 +324,21 @@ function PurchasingTab({cores, bundles, vendors, sales, fees, filter}) {
 // ══════════════════════════════════════════
 // TAB 2: CORE DETAIL
 // ══════════════════════════════════════════
-function CoreDetailTab({cores, bundles, vendors, sales, fees}) {
+function CoreDetailTab({cores, bundles, vendors, sales, fees, onBundleClick, dashData}) {
   const [search, setSearch] = useState("");
   const [selectedCore, setSelectedCore] = useState(null);
   const [histData, setHistData] = useState(null);
   const [loading, setLoading] = useState(false);
+
+  // Listen for external core selection (from Purchasing tab click)
+  useEffect(()=>{
+    const handler = (e)=>{
+      const core = cores.find(c=>c.id===e.detail);
+      if(core) selectCore(core);
+    };
+    window.addEventListener('selectCore', handler);
+    return ()=>window.removeEventListener('selectCore', handler);
+  },[cores]);
 
   const filtered = useMemo(()=>{
     if (!search || search.length < 2) return [];
@@ -381,7 +401,7 @@ function CoreDetailTab({cores, bundles, vendors, sales, fees}) {
   const yearColors = ["#60a5fa","#f472b6","#34d399","#fbbf24","#a78bfa"];
 
   if (!selectedCore) return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       <div className="relative">
         <input className="w-full bg-gray-800 text-white text-sm px-3 py-2 rounded-lg border border-gray-700" placeholder="Search cores by ID or title..." value={search} onChange={e=>setSearch(e.target.value)}/>
         {filtered.length > 0 && (
@@ -395,7 +415,23 @@ function CoreDetailTab({cores, bundles, vendors, sales, fees}) {
           </div>
         )}
       </div>
-      <p className="text-gray-500 text-center py-16">Search and select a core to view details</p>
+      {dashData && dashData.length > 0 && (
+        <div className="bg-gray-800/40 rounded-lg p-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-2">Monthly Revenue & Profit (Business Overview)</h3>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={dashData.slice(-18)}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151"/>
+              <XAxis dataKey="month" tick={{fill:"#9ca3af",fontSize:10}} tickFormatter={m=>m?m.slice(5):""}/>
+              <YAxis tick={{fill:"#9ca3af",fontSize:10}} tickFormatter={v=>"$"+(v/1000).toFixed(0)+"k"}/>
+              <Tooltip contentStyle={{background:"#1f2937",border:"1px solid #374151",borderRadius:8,fontSize:12}} formatter={v=>fmtM(v)}/>
+              <Legend/>
+              <Bar dataKey="rev" name="Revenue" fill="#3b82f6" radius={[2,2,0,0]}/>
+              <Bar dataKey="profit" name="Profit" fill="#22c55e" radius={[2,2,0,0]}/>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+      <p className="text-gray-500 text-center py-8">Search a core above, or click a Core ID in the Purchasing tab</p>
     </div>
   );
 
@@ -776,7 +812,7 @@ export default function App() {
   const [dashData, setDashData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [filter, setFilter] = useState("active");
+  const [filter, setFilter] = useState({active: true, ignored: false, visible: true});
   const [showSettings, setShowSettings] = useState(false);
 
   const loadData = useCallback(async()=>{
@@ -829,6 +865,16 @@ export default function App() {
   if (error) return <div className="min-h-screen bg-gray-950 flex items-center justify-center text-red-400 p-4"><div><p className="text-lg font-bold">Error loading data</p><p className="text-sm mt-1">{error}</p><button className="mt-3 px-4 py-2 bg-blue-600 text-white rounded text-sm" onClick={loadData}>Retry</button></div></div>;
   if (!data) return null;
 
+  // Allow navigating to core detail from purchasing table
+  const goToCore = useCallback((coreId)=>{
+    setTab(1);
+    setTimeout(()=>window.dispatchEvent(new CustomEvent('selectCore',{detail:coreId})),100);
+  },[]);
+  const goToBundle = useCallback((jls)=>{
+    setTab(2);
+    setTimeout(()=>window.dispatchEvent(new CustomEvent('selectBundle',{detail:jls})),100);
+  },[]);
+
   const tabs = ["Purchasing","Core Detail","Bundle Detail","AI Advisor"];
 
   return (
@@ -851,10 +897,15 @@ export default function App() {
       {/* Settings Panel */}
       {showSettings && (
         <div className="bg-gray-900 border-b border-gray-800 px-4 py-3">
-          <div className="flex items-center gap-4 text-xs">
-            <span className="text-gray-400">Filter:</span>
-            {[["active","Active Only"],["all","All"],["ignored","Ignored Only"]].map(([v,l])=>(
-              <button key={v} className={`px-2 py-1 rounded ${filter===v?"bg-blue-600 text-white":"bg-gray-800 text-gray-400 hover:text-white"}`} onClick={()=>setFilter(v)}>{l}</button>
+          <div className="flex items-center gap-5 text-xs">
+            <span className="text-gray-400">Show:</span>
+            {[["active","Active"],["ignored","Ignored"],["visible","Visible"]].map(([key,label])=>(
+              <label key={key} className="flex items-center gap-1.5 cursor-pointer">
+                <button className={`w-9 h-5 rounded-full transition-colors ${filter[key]?"bg-blue-600":"bg-gray-700"}`} onClick={()=>setFilter(f=>({...f,[key]:!f[key]}))}>
+                  <div className={`w-4 h-4 bg-white rounded-full transition-transform mx-0.5 ${filter[key]?"translate-x-4":"translate-x-0"}`}/>
+                </button>
+                <span className={filter[key]?"text-white":"text-gray-500"}>{label}</span>
+              </label>
             ))}
           </div>
         </div>
@@ -869,26 +920,8 @@ export default function App() {
 
       {/* Content */}
       <main className="p-4 max-w-[1400px] mx-auto">
-        {/* Dashboard Overview Chart */}
-        {tab === 0 && monthlyChart.length > 0 && (
-          <div className="mb-4 bg-gray-800/40 rounded-lg p-3">
-            <h3 className="text-sm font-medium text-gray-300 mb-2">Monthly Revenue & Profit</h3>
-            <ResponsiveContainer width="100%" height={180}>
-              <BarChart data={monthlyChart.slice(-18)}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151"/>
-                <XAxis dataKey="month" tick={{fill:"#9ca3af",fontSize:10}} tickFormatter={m=>m?m.slice(5):""}/>
-                <YAxis tick={{fill:"#9ca3af",fontSize:10}} tickFormatter={v=>"$"+(v/1000).toFixed(0)+"k"}/>
-                <Tooltip contentStyle={{background:"#1f2937",border:"1px solid #374151",borderRadius:8,fontSize:12}} formatter={v=>fmtM(v)}/>
-                <Legend/>
-                <Bar dataKey="rev" name="Revenue" fill="#3b82f6" radius={[2,2,0,0]}/>
-                <Bar dataKey="profit" name="Profit" fill="#22c55e" radius={[2,2,0,0]}/>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-
-        {tab === 0 && <PurchasingTab cores={data.cores||[]} bundles={data.bundles||[]} vendors={data.vendors||[]} sales={data.sales||[]} fees={data.fees||[]} filter={filter}/>}
-        {tab === 1 && <CoreDetailTab cores={data.cores||[]} bundles={data.bundles||[]} vendors={data.vendors||[]} sales={data.sales||[]} fees={data.fees||[]}/>}
+        {tab === 0 && <PurchasingTab cores={data.cores||[]} bundles={data.bundles||[]} vendors={data.vendors||[]} sales={data.sales||[]} fees={data.fees||[]} filter={filter} onCoreClick={goToCore}/>}
+        {tab === 1 && <CoreDetailTab cores={data.cores||[]} bundles={data.bundles||[]} vendors={data.vendors||[]} sales={data.sales||[]} fees={data.fees||[]} onBundleClick={goToBundle} dashData={monthlyChart}/>}
         {tab === 2 && <BundleDetailTab bundles={data.bundles||[]} sales={data.sales||[]} fees={data.fees||[]} cores={data.cores||[]}/>}
         {tab === 3 && <AIAdvisorTab cores={data.cores||[]} vendors={data.vendors||[]} sales={data.sales||[]}/>}
       </main>
