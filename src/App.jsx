@@ -3,6 +3,19 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 
 const API = "https://script.google.com/macros/s/AKfycbzZN4yMYYUQTzMW3rC2uwC1A0vh40XKDt5wph3XQO0O7RfzKHK-PNPzzmIh4H-X_lmV/exec";
 
+const jsonpFetch=(url)=>{
+  return new Promise((resolve,reject)=>{
+    const cb='cb_'+Math.random().toString(36).slice(2);
+    const timeout=setTimeout(()=>{reject(new Error("Timeout"));delete window[cb];},120000);
+    window[cb]=(data)=>{clearTimeout(timeout);delete window[cb];resolve(data);};
+    const s=document.createElement('script');
+    s.src=url+(url.includes('?')?'&':'?')+'callback='+cb;
+    s.onerror=()=>{clearTimeout(timeout);delete window[cb];reject(new Error("Network error"));};
+    document.head.appendChild(s);
+    s.onload=()=>{try{document.head.removeChild(s);}catch(e){}};
+  });
+};
+
 const fmt = (n, d=0) => n == null ? "—" : Number(n).toLocaleString("en-US", {minimumFractionDigits:d, maximumFractionDigits:d});
 const fmtD = (n) => fmt(n, 0);
 const fmtM = (n) => "$" + fmt(n, 0);
@@ -161,7 +174,7 @@ function CoreDetailTab({cores,bundles,vendors,sales,fees,onBundleClick,dashData}
 
   const selectCore=useCallback(async(core)=>{
     setSel(core);setSearch(core.id);setLoading(true);setHist(null);
-    try{const r=await fetch(API+"?action=coreSummary&id="+encodeURIComponent(core.id),{redirect:'follow'});const d=await r.json();setHist(d);}catch(e){console.error(e);}
+    try{const d=await jsonpFetch(API+"?action=coreSummary&id="+encodeURIComponent(core.id));setHist(d);}catch(e){console.error(e);}
     setLoading(false);
   },[]);
 
@@ -239,7 +252,7 @@ function BundleDetailTab({bundles,sales,fees,cores}) {
 
   const selectBundle=useCallback(async(b)=>{
     setSel(b);setSearch(b.j);setLoading(true);setHist(null);
-    try{const r=await fetch(API+"?action=bundleSummary&id="+encodeURIComponent(b.j),{redirect:'follow'});const d=await r.json();setHist(d);}catch(e){console.error(e);}
+    try{const d=await jsonpFetch(API+"?action=bundleSummary&id="+encodeURIComponent(b.j));setHist(d);}catch(e){console.error(e);}
     setLoading(false);
   },[]);
 
@@ -321,25 +334,19 @@ export default function App() {
   const [filter,setFilter]=useState({active:true,ignored:false,visible:true});
   const [showSettings,setShowSettings]=useState(false);
 
-  const safeFetch=async(url)=>{
-    const r=await fetch(url,{redirect:'follow',mode:'cors'});
-    const txt=await r.text();
-    try{return JSON.parse(txt);}catch(e){throw new Error("Bad JSON from "+url.split("?")[1]+": "+txt.slice(0,100));}
-  };
-
   const loadData=useCallback(async()=>{
     setLoading(true);setError(null);
     try{
       setLoadMsg("Loading dashboard summary...");
-      const dash=await safeFetch(API+"?action=dashboard");
-      if(dash.error)throw new Error("Dashboard: "+dash.error);
+      const dash=await jsonpFetch(API+"?action=dashboard");
+      if(dash&&dash.error)throw new Error("Dashboard: "+dash.error);
       setDashData(dash);
 
-      setLoadMsg("Loading live data (cores, bundles, vendors)... this may take 15-30s");
-      const live=await safeFetch(API+"?action=live");
-      if(live.error)throw new Error("Live: "+live.error);
+      setLoadMsg("Loading live data... this takes 15-30 seconds, please wait");
+      const live=await jsonpFetch(API+"?action=live");
+      if(live&&live.error)throw new Error("Live: "+live.error);
       setData(live);
-    }catch(e){setError(e.message);}
+    }catch(e){setError(String(e.message||e));}
     setLoading(false);
   },[]);
 
