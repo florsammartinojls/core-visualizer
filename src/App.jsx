@@ -811,6 +811,7 @@ export default function App() {
   const [data, setData] = useState(null);
   const [dashData, setDashData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadMsg, setLoadMsg] = useState("Loading...");
   const [error, setError] = useState(null);
   const [filter, setFilter] = useState({active: true, ignored: false, visible: true});
   const [showSettings, setShowSettings] = useState(false);
@@ -819,15 +820,22 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const [liveRes, dashRes] = await Promise.all([
-        fetch(API+"?action=live"),
-        fetch(API+"?action=dashboard")
-      ]);
-      const live = await liveRes.json();
+      // Load dashboard first (fast ~3s)
+      setLoadMsg("Loading dashboard summary...");
+      const dashRes = await fetch(API+"?action=dashboard", {redirect:'follow'});
+      if (!dashRes.ok) throw new Error("Dashboard: HTTP "+dashRes.status);
       const dash = await dashRes.json();
+      setDashData(dash);
+
+      // Then load live data (slower ~15-30s)
+      setLoadMsg("Loading live data (cores, bundles, vendors)...");
+      const liveRes = await fetch(API+"?action=live", {redirect:'follow'});
+      if (!liveRes.ok) throw new Error("Live: HTTP "+liveRes.status);
+      const text = await liveRes.text();
+      let live;
+      try { live = JSON.parse(text); } catch(e) { throw new Error("Invalid JSON response. First 200 chars: "+text.slice(0,200)); }
       if (live.error) throw new Error(live.error);
       setData(live);
-      setDashData(dash);
     } catch(e) { setError(e.message); }
     setLoading(false);
   },[]);
@@ -861,7 +869,7 @@ export default function App() {
     })).filter(r=>r.month).sort((a,b)=>a.month<b.month?-1:1);
   },[dashData]);
 
-  if (loading) return <div className="min-h-screen bg-gray-950 flex items-center justify-center"><Spinner msg="Loading live data..."/></div>;
+  if (loading) return <div className="min-h-screen bg-gray-950 flex items-center justify-center"><Spinner msg={loadMsg}/></div>;
   if (error) return <div className="min-h-screen bg-gray-950 flex items-center justify-center text-red-400 p-4"><div><p className="text-lg font-bold">Error loading data</p><p className="text-sm mt-1">{error}</p><button className="mt-3 px-4 py-2 bg-blue-600 text-white rounded text-sm" onClick={loadData}>Retry</button></div></div>;
   if (!data) return null;
 
