@@ -196,6 +196,7 @@ function CoreDetailTab({cores,bundles,vendors,sales,fees,onBundleClick,dashData}
 
   const yoyData=useMemo(()=>{if(!chartData.length)return[];const bm={};chartData.forEach(r=>{const mo=parseInt(String(r.month).split("-")[1])||0;const yr=r.y||parseInt(String(r.month).split("-")[0])||0;if(!bm[mo])bm[mo]={mo};bm[mo]["dsr_"+yr]=r.dsr;if(r.oos>0)bm[mo]["oos_"+yr]=r.oos;});return Object.values(bm).sort((a,b)=>a.mo-b.mo);},[chartData]);
   const years=useMemo(()=>[...new Set(chartData.map(r=>r.y||parseInt(String(r.month).split("-")[0])))].filter(Boolean).sort(),[chartData]);
+  const oosYears=useMemo(()=>years.filter(yr=>yoyData.some(r=>r["oos_"+yr]>0)),[years,yoyData]);
   const yCols=["#60a5fa","#f472b6","#34d399","#fbbf24"];
 
   if(!sel)return(
@@ -235,7 +236,7 @@ function CoreDetailTab({cores,bundles,vendors,sales,fees,onBundleClick,dashData}
       <div className="bg-gray-800/40 rounded-lg p-3"><h3 className="text-sm font-medium text-gray-300 mb-2">Inventory Pipeline</h3><div className="flex gap-1 items-end h-28">{pipeline.map(p=><div key={p.label} className="flex-1 flex flex-col items-center gap-1"><span className="text-xs text-gray-300 font-medium">{fmtD(p.val)}</span><div className="w-full rounded-t" style={{height:Math.max(4,p.val/maxP*80)+"px",background:"#3b82f6"}}/><span className="text-xs text-gray-500 whitespace-nowrap">{p.label}</span></div>)}</div></div>
 
       {loading&&<Spinner msg="Loading history..."/>}
-      {yoyData.length>0&&<div className="bg-gray-800/40 rounded-lg p-3"><h3 className="text-sm font-medium text-gray-300 mb-2">Monthly DSR (Year over Year)</h3><ResponsiveContainer width="100%" height={220}><ComposedChart data={yoyData}><CartesianGrid strokeDasharray="3 3" stroke="#374151"/><XAxis dataKey="mo" tick={{fill:"#9ca3af",fontSize:11}} tickFormatter={m=>["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][m]||m}/><YAxis tick={{fill:"#9ca3af",fontSize:11}}/><Tooltip contentStyle={{background:"#1f2937",border:"1px solid #374151",borderRadius:8,fontSize:12}} labelFormatter={m=>["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][Number(m)]||String(m)}/><Legend/>{years.map((yr,i)=><Bar key={yr} dataKey={"dsr_"+yr} name={String(yr)} fill={yCols[i%yCols.length]} radius={[2,2,0,0]}/>)}{years.map((yr,i)=>yoyData.some(r=>r["oos_"+yr]>0)?<Line key={"o"+yr} dataKey={"oos_"+yr} name={yr+" OOS"} stroke="#ef4444" strokeWidth={2} dot={false} strokeDasharray="4 2"/>:null)}</ComposedChart></ResponsiveContainer></div>}
+      {yoyData.length>0&&<div className="bg-gray-800/40 rounded-lg p-3"><h3 className="text-sm font-medium text-gray-300 mb-2">Monthly DSR (Year over Year)</h3><ResponsiveContainer width="100%" height={220}><ComposedChart data={yoyData}><CartesianGrid strokeDasharray="3 3" stroke="#374151"/><XAxis dataKey="mo" tick={{fill:"#9ca3af",fontSize:11}} tickFormatter={m=>["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][m]||m}/><YAxis tick={{fill:"#9ca3af",fontSize:11}}/><Tooltip contentStyle={{background:"#1f2937",border:"1px solid #374151",borderRadius:8,fontSize:12}} labelFormatter={m=>["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][Number(m)]||String(m)}/><Legend/>{years.map((yr,i)=><Bar key={yr} dataKey={"dsr_"+yr} name={String(yr)} fill={yCols[i%yCols.length]} radius={[2,2,0,0]}/>)}{oosYears.map((yr,i)=><Line key={"o"+yr} dataKey={"oos_"+yr} name={yr+" OOS"} stroke="#ef4444" strokeWidth={2} dot={false} strokeDasharray="4 2"/>)}</ComposedChart></ResponsiveContainer></div>}
       {chartData.length>0&&<div className="bg-gray-800/40 rounded-lg p-3"><h3 className="text-sm font-medium text-gray-300 mb-2">DOC & Inventory</h3><ResponsiveContainer width="100%" height={200}><ComposedChart data={chartData}><CartesianGrid strokeDasharray="3 3" stroke="#374151"/><XAxis dataKey="month" tick={{fill:"#9ca3af",fontSize:10}} tickFormatter={m=>typeof m==='string'?m.slice(5):m}/><YAxis yAxisId="d" tick={{fill:"#9ca3af",fontSize:11}}/><YAxis yAxisId="i" orientation="right" tick={{fill:"#9ca3af",fontSize:11}}/><Tooltip contentStyle={{background:"#1f2937",border:"1px solid #374151",borderRadius:8,fontSize:12}}/><Legend/><Line yAxisId="d" dataKey="doc" name="DOC" stroke="#f59e0b" strokeWidth={2} dot={false}/><Bar yAxisId="i" dataKey="own" name="All-In Own" fill="#3b82f6" opacity={0.5} radius={[2,2,0,0]}/><Bar yAxisId="i" dataKey="fba" name="FBA" fill="#8b5cf6" opacity={0.5} radius={[2,2,0,0]}/></ComposedChart></ResponsiveContainer></div>}
 
       {coreBundles.length>0&&<div className="bg-gray-800/40 rounded-lg p-3"><h3 className="text-sm font-medium text-gray-300 mb-2">Bundles ({coreBundles.length})</h3><div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr className="text-gray-500"><th className="text-left px-2 py-1">JLS</th><th className="text-left px-2 py-1">Title</th><th className="text-right px-2 py-1">DSR</th><th className="text-right px-2 py-1">DOC</th><th className="text-right px-2 py-1">FIB Inv</th><th className="text-right px-2 py-1">Price</th><th className="text-right px-2 py-1">GP</th><th className="text-right px-2 py-1">LT Profit</th></tr></thead><tbody className="divide-y divide-gray-800/30">{coreBundles.map(b=>{const f=feesMap[b.j]||{};const s=salesMap[b.j]||{};return(<tr key={b.j} className="hover:bg-gray-800/30"><td className="px-2 py-1 font-mono text-blue-400 cursor-pointer hover:underline" onClick={()=>onBundleClick&&onBundleClick(b.j)}>{b.j}</td><td className="px-2 py-1 text-gray-300 max-w-[180px] truncate">{b.t}</td><td className="px-2 py-1 text-right">{fmt(b.fbaDsr,1)}</td><td className="px-2 py-1 text-right">{fmtD(b.doc)}</td><td className="px-2 py-1 text-right">{fmtD(b.fibInv)}</td><td className="px-2 py-1 text-right">{fmtP(f.pr)}</td><td className="px-2 py-1 text-right text-green-400">{fmtP(f.gp)}</td><td className="px-2 py-1 text-right text-green-400">{fmtM(s.ltP)}</td></tr>);})}</tbody></table></div></div>}
@@ -349,7 +350,10 @@ export default function App() {
       const live=await jsonpFetch(API+"?action=live");
       if(live&&live.error)throw new Error("Live: "+live.error);
       setData(sanitize(live));
-    }catch(e){setError(String(e.message||e));}
+    }catch(e){
+      console.error("Load failed:", e);
+      setError(String(e.message||e));
+    }
     setLoading(false);
   },[]);
 
@@ -369,48 +373,3 @@ export default function App() {
   const monthlyChart=useMemo(()=>{
     if(!dashData?.monthlyTotals)return[];
     return dashData.monthlyTotals.map(r=>{
-      let m=r.Month||r.month||"";
-      if(typeof m==='object'&&m)try{m=new Date(m).toISOString().slice(0,7);}catch(e){m="";}
-      if(typeof m==='string'&&m.length>7)m=m.slice(0,7);
-      const rev=Number(r.Revenue||r.rev)||0;
-      const profit=Number(r.Profit||r.profit)||0;
-      const units=Number(r.Units||r.units)||0;
-      return{month:String(m),rev,profit,units};
-    }).filter(r=>r.month).sort((a,b)=>a.month<b.month?-1:1);
-  },[dashData]);
-
-  if(loading)return<div className="min-h-screen bg-gray-950 flex items-center justify-center"><Spinner msg={loadMsg}/></div>;
-  if(error)return<div className="min-h-screen bg-gray-950 flex items-center justify-center text-red-400 p-4"><div><p className="text-lg font-bold">Error loading data</p><p className="text-sm mt-1">{error}</p><button className="mt-3 px-4 py-2 bg-blue-600 text-white rounded text-sm" onClick={loadData}>Retry</button></div></div>;
-  if(!data)return null;
-
-  const tabs=["Purchasing","Core Detail","Bundle Detail","AI Advisor"];
-
-  return(
-    <div className="min-h-screen bg-gray-950 text-gray-100">
-      <header className="bg-gray-900 border-b border-gray-800 px-4 py-2.5 flex flex-wrap items-center gap-3">
-        <h1 className="text-base font-bold text-white">Core Visualizer</h1>
-        <span className="text-xs text-green-400 bg-green-400/10 px-2 py-0.5 rounded">LIVE — {data.cores?.length||0} cores</span>
-        <div className="flex gap-1.5 text-xs">
-          <span className="bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded">{counts.cr} Crit</span>
-          <span className="bg-yellow-500/20 text-yellow-400 px-1.5 py-0.5 rounded">{counts.wa} Warn</span>
-          <span className="bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded">{counts.he} OK</span>
-        </div>
-        <div className="ml-auto flex items-center gap-2">
-          <button className="text-gray-400 hover:text-white text-sm px-2 py-1 rounded hover:bg-gray-800" onClick={loadData}>↻ Refresh</button>
-          <button className="text-gray-400 hover:text-white text-sm px-2 py-1 rounded hover:bg-gray-800" onClick={()=>setShowSettings(!showSettings)}>⚙️</button>
-        </div>
-      </header>
-
-      {showSettings&&<div className="bg-gray-900 border-b border-gray-800 px-4 py-3"><div className="flex items-center gap-5 text-xs"><span className="text-gray-400">Show:</span>{[["active","Active"],["ignored","Ignored"],["visible","Visible"]].map(([key,label])=><label key={key} className="flex items-center gap-1.5 cursor-pointer"><button className={`w-9 h-5 rounded-full transition-colors ${filter[key]?"bg-blue-600":"bg-gray-700"}`} onClick={()=>setFilter(f=>({...f,[key]:!f[key]}))}><div className={`w-4 h-4 bg-white rounded-full transition-transform mx-0.5 ${filter[key]?"translate-x-4":"translate-x-0"}`}/></button><span className={filter[key]?"text-white":"text-gray-500"}>{label}</span></label>)}</div></div>}
-
-      <nav className="bg-gray-900/50 border-b border-gray-800 px-4 flex gap-0">{tabs.map((t,i)=><button key={t} className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${tab===i?"border-blue-500 text-white":"border-transparent text-gray-500 hover:text-gray-300"}`} onClick={()=>setTab(i)}>{t}</button>)}</nav>
-
-      <main className="p-4 max-w-[1400px] mx-auto">
-        {tab===0&&<PurchasingTab cores={data.cores||[]} bundles={data.bundles||[]} vendors={data.vendors||[]} sales={data.sales||[]} fees={data.fees||[]} filter={filter} onCoreClick={goToCore}/>}
-        {tab===1&&<CoreDetailTab cores={data.cores||[]} bundles={data.bundles||[]} vendors={data.vendors||[]} sales={data.sales||[]} fees={data.fees||[]} onBundleClick={goToBundle} dashData={monthlyChart}/>}
-        {tab===2&&<BundleDetailTab bundles={data.bundles||[]} sales={data.sales||[]} fees={data.fees||[]} cores={data.cores||[]}/>}
-        {tab===3&&<AIAdvisorTab cores={data.cores||[]} vendors={data.vendors||[]}/>}
-      </main>
-    </div>
-  );
-}
