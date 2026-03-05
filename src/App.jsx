@@ -1,613 +1,897 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, LineChart, Line, ComposedChart, Area } from "recharts";
 
-const API = "https://script.google.com/macros/s/AKfycbxp8ff7uSJouHVPKXz3wcLlu70XbkyVJVt23VP1k4x_ctPza36nZnQXnytAtE4rz2jGxw/exec";
+const API = "https://script.google.com/macros/s/AKfycbzZN4yMYYUQTzMW3rC2uwC1A0vh40XKDt5wph3XQO0O7RfzKHK-PNPzzmIh4H-X_lmV/exec";
 
-const fmt$ = (v) => v >= 1e6 ? `$${(v/1e6).toFixed(1)}M` : v >= 1000 ? `$${(v/1000).toFixed(1)}k` : `$${Math.round(v)}`;
-const fmtN = (v) => v >= 1000 ? `${(v/1000).toFixed(1)}k` : v.toString();
-const SC = {red:{bg:"bg-red-500/10",tx:"text-red-400",dt:"bg-red-500",bd:"border-red-500/30"},yellow:{bg:"bg-yellow-500/10",tx:"text-yellow-400",dt:"bg-yellow-500",bd:"border-yellow-500/30"},green:{bg:"bg-green-500/10",tx:"text-green-400",dt:"bg-green-500",bd:"border-green-500/30"},gray:{bg:"bg-gray-500/10",tx:"text-gray-400",dt:"bg-gray-500",bd:"border-gray-500/30"}};
-const TABS = ["Purchasing Priorities","Core Detail","Bundle Detail","AI Advisor"];
+// ── Helpers ──
+const fmt = (n, d=0) => n == null ? "—" : Number(n).toLocaleString("en-US", {minimumFractionDigits:d, maximumFractionDigits:d});
+const fmtD = (n) => fmt(n, 0);
+const fmtM = (n) => "$" + fmt(n, 0);
+const fmtP = (n) => "$" + fmt(n, 2);
 
-const InfoTip = ({tip}) => {
-  const [o,setO] = useState(false);
-  return (<span className="relative inline-block"><button onClick={e=>{e.stopPropagation();setO(!o);}} className="text-blue-400/60 hover:text-blue-400 text-[9px] ml-0.5 align-super">i</button>{o&&<><div className="fixed inset-0 z-40" onClick={()=>setO(false)}/><div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-3 bg-gray-900 border border-blue-500/30 rounded-lg text-[11px] text-gray-300 font-normal whitespace-normal shadow-2xl leading-relaxed">{tip}</div></>}</span>);
-};
+function docColor(doc, lt, buf) {
+  if (doc <= lt) return "#ef4444";
+  if (doc <= lt + (buf||14)) return "#f59e0b";
+  return "#22c55e";
+}
+function statusLabel(doc, lt, buf) {
+  if (doc <= lt) return "critical";
+  if (doc <= lt + (buf||14)) return "warning";
+  return "healthy";
+}
+function StatusDot({status}) {
+  const c = status === "critical" ? "bg-red-500" : status === "warning" ? "bg-yellow-500" : "bg-green-500";
+  return <span className={`inline-block w-2.5 h-2.5 rounded-full ${c}`}/>;
+}
+function trend(d7, dsr) {
+  if (!dsr) return "—";
+  const pct = ((d7 - dsr) / dsr * 100);
+  if (pct > 5) return <span className="text-green-400">▲ {pct.toFixed(0)}%</span>;
+  if (pct < -5) return <span className="text-red-400">▼ {Math.abs(pct).toFixed(0)}%</span>;
+  return <span className="text-gray-400">● {pct.toFixed(0)}%</span>;
+}
 
-export default function App() {
-  const [rawData, setRawData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [tab, setTab] = useState(0);
+// ── Info Tooltip ──
+function InfoTip({text}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="relative inline-block ml-1">
+      <button onClick={()=>setOpen(!open)} className="text-gray-500 hover:text-gray-300 text-xs">ⓘ</button>
+      {open && <div className="absolute z-50 bg-gray-800 text-xs text-gray-200 p-2 rounded shadow-lg w-48 -left-20 top-5 border border-gray-600" onClick={()=>setOpen(false)}>{text}</div>}
+    </span>
+  );
+}
+
+// ── Sortable Header ──
+function SortTh({label, field, sort, setSort, info, className=""}) {
+  const active = sort.field === field;
+  const arrow = active ? (sort.dir === "asc" ? " ↑" : " ↓") : "";
+  return (
+    <th className={`px-2 py-1.5 text-left text-xs font-medium text-gray-400 cursor-pointer hover:text-white select-none whitespace-nowrap ${className}`}
+      onClick={()=>setSort({field, dir: active && sort.dir==="desc" ? "asc" : "desc"})}>
+      {label}{arrow}{info && <InfoTip text={info}/>}
+    </th>
+  );
+}
+
+// ── Loading Spinner ──
+function Spinner({msg}) {
+  return (
+    <div className="flex flex-col items-center justify-center h-64 gap-3">
+      <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"/>
+      <p className="text-gray-400 text-sm">{msg || "Loading..."}</p>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════
+// TAB 1: PURCHASING PRIORITIES
+// ══════════════════════════════════════════
+function PurchasingTab({cores, bundles, vendors, sales, fees, filter}) {
+  const [view, setView] = useState("core");
+  const [sort, setSort] = useState({field:"doc", dir:"asc"});
+  const [venFilter, setVenFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [targetDoc, setTargetDoc] = useState(90);
   const [search, setSearch] = useState("");
-  const [selCore, setSelCore] = useState(null);
-  const [selBundle, setSelBundle] = useState(null);
-  const [bSearch, setBSearch] = useState("");
-  const [vf, setVf] = useState("All");
-  const [sf, setSf] = useState("All");
-  const [tDOC, setTDOC] = useState(90);
-  const [viewMode, setViewMode] = useState("vendor");
-  const [sortBy, setSortBy] = useState("priority");
-  const [showSettings, setShowSettings] = useState(false);
-  const [critMode, setCritMode] = useState("lt");
-  const [critCustom, setCritCustom] = useState(45);
-  const [warnMode, setWarnMode] = useState("lt_buf");
-  const [warnCustom, setWarnCustom] = useState(60);
-  const [aiRes, setAiRes] = useState("");
-  const [aiLoad, setAiLoad] = useState(false);
-  const [aiCore, setAiCore] = useState("");
-  const [lastUpdate, setLastUpdate] = useState(null);
 
-  // Fetch data from Google Sheets API
-  useEffect(() => {
-    const fetchData = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const r = await fetch(`${API}?action=all`);
-        const d = await r.json();
-        if (d.error) throw new Error(d.error);
-        setRawData(d);
-        setLastUpdate(d.timestamp || new Date().toISOString());
-      } catch (e) {
-        setError(e.message);
-      }
-      setLoading(false);
-    };
-    fetchData();
-  }, []);
-
-  // Build vendor lookup
-  const vendorLookup = useMemo(() => {
-    if (!rawData) return {};
+  // Build vendor map
+  const venMap = useMemo(()=>{
     const m = {};
-    rawData.vendors.forEach(v => { m[v.name] = v; if (v.code) m[v.code] = v; });
+    vendors.forEach(v => m[v.name] = v);
     return m;
-  }, [rawData]);
+  },[vendors]);
 
-  // Build sales lookup by JLS#
-  const salesLookup = useMemo(() => {
-    if (!rawData) return {};
+  // Build sales map by JLS
+  const salesMap = useMemo(()=>{
     const m = {};
-    rawData.sales.forEach(s => { m[s.j] = s; });
+    sales.forEach(s => m[s.j] = s);
     return m;
-  }, [rawData]);
+  },[sales]);
 
-  // Build fees lookup by JLS#
-  const feesLookup = useMemo(() => {
-    if (!rawData) return {};
+  // Build fees map by JLS
+  const feesMap = useMemo(()=>{
     const m = {};
-    rawData.fees.forEach(f => { m[f.j] = f; });
+    fees.forEach(f => m[f.j] = f);
     return m;
-  }, [rawData]);
+  },[fees]);
 
-  // Status function
-  const getSt = (c) => {
-    const ct = critMode === "lt" ? (c.ltDays || 30) : critCustom;
-    const wt = warnMode === "lt_buf" ? (c.ltDays || 30) + c.buf : warnCustom;
-    if (!c.d7 || c.d7 === 0) return {l:"No Sales",c:"gray",p:4};
-    if (c.doc <= ct) return {l:"Critical",c:"red",p:1};
-    if (c.doc <= wt) return {l:"Warning",c:"yellow",p:2};
-    return {l:"Healthy",c:"green",p:3};
-  };
-
-  // Enrich cores with all data
-  const enriched = useMemo(() => {
-    if (!rawData) return [];
-    return rawData.cores
-      .filter(c => c.active !== "No" && c.id && c.id !== "Core-0000")
-      .map(c => {
-        const vInfo = vendorLookup[c.ven] || {};
-        const ltDays = vInfo.lt || 30;
-        const allInOwn = c.raw + c.inb + c.pp + c.jfn + c.pq + c.ji + c.fba;
-
-        // Find bundles for this core
-        const coreBundles = rawData.bundles
-          .filter(b => b.core1 === c.id && b.active !== "No")
-          .map(b => {
-            const sales = salesLookup[b.j] || {};
-            const fees = feesLookup[b.j] || {};
-            return {
-              j: b.j, t: b.t, asin: b.asin,
-              cd: b.cd || 0,
-              d7comp: b.d7comp || 0,
-              d7fba: b.d7fba || 0,
-              fb: b.fibInv || 0,
-              pr: fees.pr || 0,
-              co: fees.pdmtCogs || b.pdmtCogs || 0,
-              gp: fees.gp || 0,
-              aicogs: fees.aicogs || b.aicogs || 0,
-              totalFee: fees.totalFee || 0,
-              beAcos: fees.beAcos || 0,
-              oo: (b.fibInv || 0) === 0 && (b.cd || 0) > 0,
-              lu: sales.ltU || 0, lr: sales.ltR || 0, lp: sales.ltP || 0,
-              tyU: sales.tyU || 0, ty: sales.tyR || 0, tyP: sales.tyP || 0,
-              lyU: sales.lyU || 0, ly: sales.lyR || 0, lyP: sales.lyP || 0,
-              l7U: sales.l7U || 0, l7R: sales.l7R || 0,
-              l28U: sales.l28U || 0, l28R: sales.l28R || 0,
-              l84U: sales.l84U || 0, l84R: sales.l84R || 0,
-              tmU: sales.tmU || 0, tmR: sales.tmR || 0, tmP: sales.tmP || 0,
-              lmU: sales.lmU || 0, lmR: sales.lmR || 0, lmP: sales.lmP || 0,
-              lm1U: sales.lm1U || 0, lm1R: sales.lm1R || 0, lm1P: sales.lm1P || 0,
-              fibDoc: b.fibDoc || 0,
-              compDOC: b.cd > 0 ? Math.floor(allInOwn / b.cd) : 9999,
-            };
-          });
-
-        const totalBDsr = coreBundles.reduce((s,x) => s + x.cd, 0);
-        const jlE = coreBundles.map(b => ({
-          ...b,
-          pctSales: +(totalBDsr > 0 ? b.cd / totalBDsr * 100 : 0).toFixed(1),
-        }));
-
-        const ltProfit = jlE.reduce((s,b) => s + b.lp, 0);
-        const ltRev = jlE.reduce((s,b) => s + b.lr, 0);
-        const tyRev = jlE.reduce((s,b) => s + b.ty, 0);
-        const lyRev = jlE.reduce((s,b) => s + b.ly, 0);
-        const oosCount = jlE.filter(b => b.oo).length;
-        const wMargin = ltRev > 0 ? (ltProfit/ltRev*100).toFixed(1) : 0;
-
-        const need = Math.max(0, Math.ceil(c.d7 * tDOC) - c.fba);
-        const needCost = +(need * c.cost).toFixed(2);
-        const docAfterBase = c.d7 > 0 ? Math.floor((c.fba + need) / c.d7) : 9999;
-        const trendDir = c.d7 > c.dsr ? "▲" : "▼";
-
-        const coreObj = {
-          ...c, ltDays, allInOwn, jl: jlE,
-          st: null, need, needCost, docAfterBase, trendDir,
-          ltProfit, ltRev, tyRev, lyRev, wMargin, oosCount,
-          recheckFlag: false,
-          venInfo: vInfo,
-        };
-        coreObj.st = getSt(coreObj);
-        return coreObj;
+  // Aggregate sales to core level
+  const coreSales = useMemo(()=>{
+    const m = {};
+    cores.forEach(c => {
+      const jlsList = c.jlsList ? c.jlsList.split(",").map(s=>s.trim()) : [];
+      let ltR=0,ltP=0,tyR=0,tyP=0,lyR=0,lyP=0;
+      jlsList.forEach(j => {
+        const s = salesMap[j];
+        if(s){ltR+=s.ltR;ltP+=s.ltP;tyR+=s.tyR;tyP+=s.tyP;lyR+=s.lyR;lyP+=s.lyP;}
       });
-  }, [rawData, tDOC, critMode, critCustom, warnMode, warnCustom, vendorLookup, salesLookup, feesLookup]);
+      m[c.id] = {ltR,ltP,tyR,tyP,lyR,lyP};
+    });
+    return m;
+  },[cores, salesMap]);
 
-  const filtered = useMemo(() => {
-    let d = enriched;
-    if (vf !== "All") d = d.filter(c => c.ven === vf);
-    if (sf !== "All") d = d.filter(c => c.st.l === sf);
-    return d;
-  }, [enriched, vf, sf]);
+  // Process & filter cores
+  const processed = useMemo(()=>{
+    return cores.map(c => {
+      const v = venMap[c.ven] || {};
+      const lt = v.lt || 45;
+      const st = statusLabel(c.doc, lt, c.buf);
+      const allIn = c.raw + c.inb + c.pp + c.jfn + c.pq + c.ji + c.fba;
+      const cs = coreSales[c.id] || {};
+      const need = Math.max(0, Math.ceil((targetDoc - c.doc) * c.dsr));
+      const needCost = need * c.cost;
+      const docAfter = c.dsr > 0 ? c.doc + (need / c.dsr) : c.doc;
+      return {...c, lt, st, allIn, need, needCost, docAfter, ...cs};
+    }).filter(c => {
+      if (filter === "active" && (c.active !== "Yes" || (c.ignoreUntil && new Date(c.ignoreUntil) > new Date()))) return false;
+      if (filter === "ignored" && !(c.ignoreUntil && new Date(c.ignoreUntil) > new Date())) return false;
+      if (venFilter && c.ven !== venFilter) return false;
+      if (statusFilter && c.st !== statusFilter) return false;
+      if (search && !c.id.toLowerCase().includes(search.toLowerCase()) && !c.ti.toLowerCase().includes(search.toLowerCase())) return false;
+      return true;
+    });
+  },[cores, venMap, coreSales, filter, venFilter, statusFilter, targetDoc, search]);
 
-  const vendors = useMemo(() => ["All", ...new Set(enriched.map(c => c.ven).filter(Boolean))], [enriched]);
+  // Sort
+  const sorted = useMemo(()=>{
+    const s = [...processed];
+    const dir = sort.dir === "asc" ? 1 : -1;
+    const pri = {critical:0, warning:1, healthy:2};
+    s.sort((a,b)=>{
+      let av = a[sort.field], bv = b[sort.field];
+      if (sort.field === "st") { av = pri[av]; bv = pri[bv]; }
+      if (typeof av === "string") return av.localeCompare(bv) * dir;
+      return ((av||0) - (bv||0)) * dir;
+    });
+    return s;
+  },[processed, sort]);
 
-  const vendorGrps = useMemo(() => {
-    const g = {};
-    filtered.forEach(c => { if (!g[c.ven]) g[c.ven] = []; g[c.ven].push(c); });
-    return Object.entries(g).map(([v, cores]) => {
-      const vi = vendorLookup[v] || {};
-      const tN = cores.reduce((s,c) => s+c.need, 0);
-      const tC = cores.reduce((s,c) => s+c.needCost, 0);
-      const moq$ = vi.moqDollar || 0;
-      const moqPcs = vi.moqCases || 0;
-      const mm = moq$ > 0 ? tC >= moq$ : moqPcs > 0 ? tN >= moqPcs : true;
-      const sf2 = moq$ > 0 ? Math.max(0, moq$ - tC) : moqPcs > 0 ? Math.max(0, moqPcs - tN) : 0;
-      const w = Math.min(...cores.map(c => c.st.p));
-      const cws = cores.map(c => {
-        let sq = c.need;
-        if (!mm && c.d7 > 0) {
-          const sh = c.d7 / Math.max(.01, cores.reduce((s,x) => s+x.d7, 0));
-          if (moq$ > 0) sq = Math.ceil(c.need + (sf2*sh)/Math.max(.001,c.cost));
-          else sq = Math.ceil(c.need + sf2*sh);
-        }
-        return {...c, sq, sqCost:+(sq*c.cost).toFixed(2), sqDOC:c.d7>0?Math.floor((c.fba+sq)/c.d7):9999, totalQ:sq, totalP:+(sq*c.cost).toFixed(2)};
-      });
-      return {vendor:v, vi, cores:cws, totalNeed:tN, totalCost:tC, meetsMin:mm, shortfall:Math.round(sf2), crit:cores.filter(c=>c.st.c==="red").length, warn:cores.filter(c=>c.st.c==="yellow").length, worst:w, grandP:cws.reduce((s,c)=>s+c.totalP,0)};
-    }).sort((a,b) => a.worst - b.worst);
-  }, [filtered, tDOC, vendorLookup]);
+  // Status counts
+  const counts = useMemo(()=>{
+    let cr=0,wa=0,he=0;
+    processed.forEach(c=>{if(c.st==="critical")cr++;else if(c.st==="warning")wa++;else he++;});
+    return {cr,wa,he};
+  },[processed]);
 
-  const coreFlat = useMemo(() => {
-    const s = [...filtered];
-    const pe = (c,f) => c.jl.reduce((x,j) => x+(j[f]>0&&j.lr>0?j.lp*(j[f]/j.lr):0),0);
-    switch(sortBy) {
-      case "lt_profit": return s.sort((a,b) => b.ltProfit-a.ltProfit);
-      case "lt_rev": return s.sort((a,b) => b.ltRev-a.ltRev);
-      case "ty_rev": return s.sort((a,b) => b.tyRev-a.tyRev);
-      case "ty_profit": return s.sort((a,b) => pe(b,"ty")-pe(a,"ty"));
-      case "ly_rev": return s.sort((a,b) => b.lyRev-a.lyRev);
-      case "ly_profit": return s.sort((a,b) => pe(b,"ly")-pe(a,"ly"));
-      default: return s.sort((a,b) => a.st.p-b.st.p || a.doc-b.doc);
-    }
-  }, [filtered, sortBy]);
+  // Unique vendors
+  const uniqueVens = useMemo(()=>[...new Set(cores.map(c=>c.ven).filter(Boolean))].sort(),[cores]);
 
-  const summary = useMemo(() => ({
-    total: enriched.length,
-    crit: enriched.filter(c => c.st.c==="red").length,
-    warn: enriched.filter(c => c.st.c==="yellow").length,
-    ok: enriched.filter(c => c.st.c==="green").length,
-  }), [enriched]);
-
-  const searchRes = useMemo(() => {
-    if (!search) return [];
-    const q = search.toLowerCase();
-    return enriched.filter(c => c.id.toLowerCase().includes(q) || c.ti.toLowerCase().includes(q));
-  }, [search, enriched]);
-
-  const allBundles = useMemo(() => enriched.flatMap(c => c.jl.map(b => ({...b, coreId:c.id, coreTi:c.ti, ven:c.ven, allInOwn:c.allInOwn}))), [enriched]);
-  const bSearchRes = useMemo(() => {
-    if (!bSearch) return allBundles.slice(0,30);
-    const q = bSearch.toLowerCase();
-    return allBundles.filter(b => b.j.toLowerCase().includes(q) || b.t.toLowerCase().includes(q) || (b.coreId||"").toLowerCase().includes(q));
-  }, [bSearch, allBundles]);
-
-  const core = selCore ? enriched.find(c => c.id === selCore) : null;
-
-  const bundleDetail = useMemo(() => {
-    if (!selBundle) return null;
-    const c = enriched.find(x => x.jl.some(b => b.j === selBundle.j));
-    if (!c) return null;
-    const b = c.jl.find(x => x.j === selBundle.j);
-    if (!b) return null;
-    return {...b, core: c};
-  }, [selBundle, enriched]);
-
-  const runAI = async (cid) => {
-    setAiLoad(true); setAiRes("");
-    const c = enriched.find(x => x.id === cid);
-    if (!c) { setAiRes("Not found."); setAiLoad(false); return; }
-    try {
-      const r = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({model:"claude-sonnet-4-5-20250514",max_tokens:1000,messages:[{role:"user",content:`Purchasing advisor Amazon FBA. Concise, 200 words max.\nCORE:${c.id}—${c.ti}|${c.ven}|$${c.cost}/pc|LT:${c.ltDays}d|${c.st.l}\nDSR:${c.dsr}|7D:${c.d7}|DOC:${c.doc}d|FBA:${c.fba}|Own:${c.allInOwn}|OOS:${c.oosCount}\nMargin:${c.wMargin}%|Need${tDOC}d:${c.need}u($${c.needCost})\nBundles:${c.jl.slice(0,5).map(b=>`${b.j}:DSR${b.cd},$${b.pr},GP$${b.gp},${b.oo?"OOS":"ok"}`).join(";")}\nGive:1)BUY/WAIT/MONITOR 2)Qty&timing 3)Risk 4)Idea`}]})
-      });
-      const data = await r.json();
-      setAiRes(data.content?.map(i => i.text||"").join("\n") || "No response");
-    } catch(e) { setAiRes("Error: "+e.message); }
-    setAiLoad(false);
-  };
-
-  const th = "py-2 px-2 text-gray-500 font-medium text-[10px] uppercase tracking-wider";
-
-  // Loading screen
-  if (loading) return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-      <div className="text-center">
-        <div className="animate-pulse text-4xl mb-4">📊</div>
-        <div className="text-blue-400 font-bold text-lg mb-2">Loading Core Visualizer</div>
-        <div className="text-gray-500 text-sm">Reading from Google Sheets... (30-90 seconds first time)</div>
-      </div>
-    </div>
-  );
-
-  if (error) return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-      <div className="text-center max-w-md">
-        <div className="text-4xl mb-4">❌</div>
-        <div className="text-red-400 font-bold text-lg mb-2">Connection Error</div>
-        <div className="text-gray-400 text-sm mb-4">{error}</div>
-        <button onClick={() => window.location.reload()} className="px-4 py-2 bg-blue-600 rounded-lg text-sm">Retry</button>
-      </div>
-    </div>
-  );
+  // Vendor view data
+  const vendorGroups = useMemo(()=>{
+    if (view !== "vendor") return [];
+    const groups = {};
+    sorted.forEach(c=>{
+      if(!groups[c.ven]) groups[c.ven] = {vendor: venMap[c.ven]||{name:c.ven}, cores:[], totalNeed:0};
+      groups[c.ven].cores.push(c);
+      groups[c.ven].totalNeed += c.needCost;
+    });
+    return Object.values(groups).sort((a,b)=>b.totalNeed - a.totalNeed);
+  },[sorted, view, venMap]);
 
   return (
-  <div className="min-h-screen bg-gray-950 text-white text-xs">
-    <div className="bg-gray-900/80 backdrop-blur border-b border-gray-800 px-4 py-3 sticky top-0 z-30">
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-3">
-          <h1 className="text-base font-bold text-blue-400">Core Visualizer</h1>
-          <span className="text-[10px] text-gray-600">LIVE — {enriched.length} cores</span>
+    <div className="space-y-3">
+      {/* Controls */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex bg-gray-800 rounded-lg overflow-hidden">
+          <button className={`px-3 py-1.5 text-xs font-medium ${view==="core"?"bg-blue-600 text-white":"text-gray-400 hover:text-white"}`} onClick={()=>setView("core")}>By Core</button>
+          <button className={`px-3 py-1.5 text-xs font-medium ${view==="vendor"?"bg-blue-600 text-white":"text-gray-400 hover:text-white"}`} onClick={()=>setView("vendor")}>By Vendor</button>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="flex gap-2 text-[11px]">
-            <span className="px-2 py-0.5 bg-red-500/20 text-red-400 rounded-full">{summary.crit} Crit</span>
-            <span className="px-2 py-0.5 bg-yellow-500/20 text-yellow-400 rounded-full">{summary.warn} Warn</span>
-            <span className="px-2 py-0.5 bg-green-500/20 text-green-400 rounded-full">{summary.ok} OK</span>
-          </div>
-          <button onClick={() => setShowSettings(!showSettings)} className="text-gray-400 hover:text-white text-sm">⚙️</button>
-          <button onClick={() => window.location.reload()} className="text-gray-400 hover:text-white text-[10px] px-2 py-1 bg-gray-800 rounded">↻ Refresh</button>
+        <input className="bg-gray-800 text-white text-xs px-2 py-1.5 rounded border border-gray-700 w-44" placeholder="Search core/title..." value={search} onChange={e=>setSearch(e.target.value)}/>
+        <select className="bg-gray-800 text-white text-xs px-2 py-1.5 rounded border border-gray-700" value={venFilter} onChange={e=>setVenFilter(e.target.value)}>
+          <option value="">All Vendors</option>
+          {uniqueVens.map(v=><option key={v} value={v}>{v}</option>)}
+        </select>
+        <select className="bg-gray-800 text-white text-xs px-2 py-1.5 rounded border border-gray-700" value={statusFilter} onChange={e=>setStatusFilter(e.target.value)}>
+          <option value="">All Status</option>
+          <option value="critical">Critical</option>
+          <option value="warning">Warning</option>
+          <option value="healthy">Healthy</option>
+        </select>
+        <div className="flex items-center gap-1 text-xs text-gray-400">
+          <span>Target DOC:</span>
+          <input type="number" className="bg-gray-800 text-white text-xs px-2 py-1.5 rounded border border-gray-700 w-16" value={targetDoc} onChange={e=>setTargetDoc(Number(e.target.value)||90)}/>
+        </div>
+        <div className="ml-auto flex gap-2 text-xs">
+          <span className="bg-red-500/20 text-red-400 px-2 py-1 rounded">{counts.cr} Crit</span>
+          <span className="bg-yellow-500/20 text-yellow-400 px-2 py-1 rounded">{counts.wa} Warn</span>
+          <span className="bg-green-500/20 text-green-400 px-2 py-1 rounded">{counts.he} OK</span>
         </div>
       </div>
-      {showSettings && (
-        <div className="bg-gray-800 rounded-xl p-4 border border-gray-700 mb-3">
-          <div className="text-xs text-gray-300 font-medium mb-3">Semaphore Thresholds</div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div><div className="text-[10px] text-red-400 font-medium mb-2">🔴 Critical when DOC ≤</div><div className="flex gap-2 items-center"><select value={critMode} onChange={e=>setCritMode(e.target.value)} className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300"><option value="lt">Lead Time (per vendor)</option><option value="custom">Custom days</option></select>{critMode==="custom"&&<input type="number" value={critCustom} onChange={e=>setCritCustom(Math.max(1,+e.target.value||30))} className="w-16 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-center text-white"/>}</div></div>
-            <div><div className="text-[10px] text-yellow-400 font-medium mb-2">🟡 Warning when DOC ≤</div><div className="flex gap-2 items-center"><select value={warnMode} onChange={e=>setWarnMode(e.target.value)} className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300"><option value="lt_buf">LT + Buffer (per core)</option><option value="custom">Custom days</option></select>{warnMode==="custom"&&<input type="number" value={warnCustom} onChange={e=>setWarnCustom(Math.max(1,+e.target.value||60))} className="w-16 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-center text-white"/>}</div></div>
+
+      {/* Core View */}
+      {view === "core" && (
+        <div className="overflow-x-auto rounded-lg border border-gray-800">
+          <table className="w-full text-xs">
+            <thead className="bg-gray-800/80">
+              <tr>
+                <SortTh label="" field="st" sort={sort} setSort={setSort}/>
+                <SortTh label="Core ID" field="id" sort={sort} setSort={setSort}/>
+                <SortTh label="Vendor" field="ven" sort={sort} setSort={setSort}/>
+                <SortTh label="Title" field="ti" sort={sort} setSort={setSort}/>
+                <SortTh label="C.DSR" field="dsr" sort={sort} setSort={setSort} info="Complete Daily Sales Rate"/>
+                <SortTh label="7D DSR" field="d7" sort={sort} setSort={setSort} info="7-day average DSR"/>
+                <th className="px-2 py-1.5 text-left text-xs font-medium text-gray-400">Trend</th>
+                <SortTh label="DOC" field="doc" sort={sort} setSort={setSort} info="Days of Coverage at current DSR"/>
+                <SortTh label="All-In Own" field="allIn" sort={sort} setSort={setSort} info="Raw+Inb+PP+JFN+PQ+JI+FBA"/>
+                <th className="px-2 py-1.5 text-gray-600">│</th>
+                <SortTh label="LT Rev" field="ltR" sort={sort} setSort={setSort} info="Lifetime Revenue"/>
+                <SortTh label="LT Profit" field="ltP" sort={sort} setSort={setSort} info="Lifetime Profit"/>
+                <SortTh label="TY Rev" field="tyR" sort={sort} setSort={setSort} info="This Year Revenue"/>
+                <SortTh label="TY Profit" field="tyP" sort={sort} setSort={setSort} info="This Year Profit"/>
+                <th className="px-2 py-1.5 text-gray-600">│</th>
+                <SortTh label="Need $" field="needCost" sort={sort} setSort={setSort} info="Cost to reach target DOC"/>
+                <SortTh label="DOC After" field="docAfter" sort={sort} setSort={setSort} info="DOC after purchasing needed qty"/>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800/50">
+              {sorted.map(c=>(
+                <tr key={c.id} className="hover:bg-gray-800/40 transition-colors">
+                  <td className="px-2 py-1.5"><StatusDot status={c.st}/></td>
+                  <td className="px-2 py-1.5 font-mono text-blue-400">{c.id}</td>
+                  <td className="px-2 py-1.5 text-gray-300 max-w-[120px] truncate">{c.ven}</td>
+                  <td className="px-2 py-1.5 text-gray-200 max-w-[200px] truncate">{c.ti}</td>
+                  <td className="px-2 py-1.5 text-right">{fmt(c.dsr,1)}</td>
+                  <td className="px-2 py-1.5 text-right">{fmt(c.d7,1)}</td>
+                  <td className="px-2 py-1.5 text-right">{trend(c.d7, c.dsr)}</td>
+                  <td className="px-2 py-1.5 text-right font-medium" style={{color:docColor(c.doc,c.lt,c.buf)}}>{fmtD(c.doc)}</td>
+                  <td className="px-2 py-1.5 text-right">{fmtD(c.allIn)}</td>
+                  <td className="px-2 py-1.5 text-gray-600">│</td>
+                  <td className="px-2 py-1.5 text-right text-gray-300">{fmtM(c.ltR)}</td>
+                  <td className="px-2 py-1.5 text-right text-green-400">{fmtM(c.ltP)}</td>
+                  <td className="px-2 py-1.5 text-right text-gray-300">{fmtM(c.tyR)}</td>
+                  <td className="px-2 py-1.5 text-right text-green-400">{fmtM(c.tyP)}</td>
+                  <td className="px-2 py-1.5 text-gray-600">│</td>
+                  <td className="px-2 py-1.5 text-right text-yellow-400">{c.needCost > 0 ? fmtM(c.needCost) : "—"}</td>
+                  <td className="px-2 py-1.5 text-right" style={{color:docColor(c.docAfter,c.lt,c.buf)}}>{fmtD(c.docAfter)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {sorted.length === 0 && <p className="text-gray-500 text-center py-8">No cores match filters</p>}
+        </div>
+      )}
+
+      {/* Vendor View */}
+      {view === "vendor" && (
+        <div className="space-y-3">
+          {vendorGroups.map(g=>{
+            const v = g.vendor;
+            const crCount = g.cores.filter(c=>c.st==="critical").length;
+            const waCount = g.cores.filter(c=>c.st==="warning").length;
+            const meetsMoq = v.moqDollar ? g.totalNeed >= v.moqDollar : true;
+            return (
+              <div key={v.name||"unknown"} className="border border-gray-800 rounded-lg overflow-hidden">
+                <div className="bg-gray-800/80 px-3 py-2 flex flex-wrap items-center gap-3">
+                  <span className="font-medium text-white text-sm">{v.name||"Unknown"}</span>
+                  <span className="text-xs text-gray-400">LT: {v.lt||"?"}d</span>
+                  <span className="text-xs text-gray-400">MOQ: {v.moqDollar ? fmtM(v.moqDollar) : "—"}</span>
+                  <span className="text-xs text-gray-400">Terms: {v.terms||"—"}</span>
+                  {crCount > 0 && <span className="text-xs bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded">{crCount} crit</span>}
+                  {waCount > 0 && <span className="text-xs bg-yellow-500/20 text-yellow-400 px-1.5 py-0.5 rounded">{waCount} warn</span>}
+                  <span className="ml-auto text-xs font-medium text-yellow-400">Total: {fmtM(g.totalNeed)}</span>
+                  {v.moqDollar > 0 && (
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${meetsMoq ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
+                      {meetsMoq ? "Meets MOQ" : "Below MOQ"}
+                    </span>
+                  )}
+                </div>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-gray-800/40">
+                      <th className="px-2 py-1 text-left text-gray-500"></th>
+                      <th className="px-2 py-1 text-left text-gray-500">Core</th>
+                      <th className="px-2 py-1 text-left text-gray-500">Title</th>
+                      <th className="px-2 py-1 text-right text-gray-500">DSR</th>
+                      <th className="px-2 py-1 text-right text-gray-500">DOC</th>
+                      <th className="px-2 py-1 text-right text-gray-500">All-In</th>
+                      <th className="px-2 py-1 text-right text-gray-500">Need $</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-800/30">
+                    {g.cores.map(c=>(
+                      <tr key={c.id} className="hover:bg-gray-800/30">
+                        <td className="px-2 py-1"><StatusDot status={c.st}/></td>
+                        <td className="px-2 py-1 font-mono text-blue-400">{c.id}</td>
+                        <td className="px-2 py-1 text-gray-300 max-w-[200px] truncate">{c.ti}</td>
+                        <td className="px-2 py-1 text-right">{fmt(c.dsr,1)}</td>
+                        <td className="px-2 py-1 text-right" style={{color:docColor(c.doc,c.lt,c.buf)}}>{fmtD(c.doc)}</td>
+                        <td className="px-2 py-1 text-right">{fmtD(c.allIn)}</td>
+                        <td className="px-2 py-1 text-right text-yellow-400">{c.needCost>0?fmtM(c.needCost):"—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════
+// TAB 2: CORE DETAIL
+// ══════════════════════════════════════════
+function CoreDetailTab({cores, bundles, vendors, sales, fees}) {
+  const [search, setSearch] = useState("");
+  const [selectedCore, setSelectedCore] = useState(null);
+  const [histData, setHistData] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const filtered = useMemo(()=>{
+    if (!search || search.length < 2) return [];
+    const s = search.toLowerCase();
+    return cores.filter(c => c.id.toLowerCase().includes(s) || c.ti.toLowerCase().includes(s)).slice(0,10);
+  },[cores, search]);
+
+  const venMap = useMemo(()=>{const m={};vendors.forEach(v=>m[v.name]=v);return m;},[vendors]);
+  const salesMap = useMemo(()=>{const m={};sales.forEach(s=>m[s.j]=s);return m;},[sales]);
+  const feesMap = useMemo(()=>{const m={};fees.forEach(f=>m[f.j]=f);return m;},[fees]);
+
+  const selectCore = useCallback(async(core)=>{
+    setSelectedCore(core);
+    setSearch(core.id);
+    setLoading(true);
+    setHistData(null);
+    try {
+      const r = await fetch(API+"?action=coreSummary&id="+encodeURIComponent(core.id));
+      const d = await r.json();
+      setHistData(d);
+    } catch(e) { console.error(e); }
+    setLoading(false);
+  },[]);
+
+  const v = selectedCore ? venMap[selectedCore.ven] || {} : {};
+  const jlsList = selectedCore?.jlsList ? selectedCore.jlsList.split(",").map(s=>s.trim()) : [];
+  const coreBundles = bundles.filter(b => jlsList.includes(b.j));
+
+  // Aggregate core sales
+  const cs = useMemo(()=>{
+    let ltR=0,ltP=0,tyR=0,tyP=0,lyR=0,lyP=0;
+    jlsList.forEach(j=>{const s=salesMap[j];if(s){ltR+=s.ltR;ltP+=s.ltP;tyR+=s.tyR;tyP+=s.tyP;lyR+=s.lyR;lyP+=s.lyP;}});
+    return {ltR,ltP,tyR,tyP,lyR,lyP};
+  },[jlsList, salesMap]);
+
+  // Chart data from history
+  const chartData = useMemo(()=>{
+    if (!histData?.coreInv) return [];
+    return histData.coreInv.map(r => {
+      const m = typeof r.Month === 'string' ? r.Month : r.Month ? new Date(r.Month).toISOString().slice(0,7) : r.month;
+      return { month: typeof m === 'string' ? m.slice(0,7) : m, dsr: r["Avg DSR"]||r.avgDsr||0, d7: r["Avg 7D DSR"]||r.avg7d||0, doc: r["Avg DOC"]||r.avgDoc||0, own: r["Avg All-In Own"]||r.avgOwn||0, fba: r["Avg FBA"]||r.avgFba||0, oos: r["OOS Days"]||r.oosDays||0, y: r.Year||r.y||0 };
+    }).sort((a,b)=>a.month<b.month?-1:1);
+  },[histData]);
+
+  // Year-over-year DSR data
+  const yoyData = useMemo(()=>{
+    if (!chartData.length) return [];
+    const byMonth = {};
+    chartData.forEach(r=>{
+      const mo = typeof r.month === 'string' ? parseInt(r.month.split("-")[1]) : r.m;
+      const yr = r.y || (typeof r.month === 'string' ? parseInt(r.month.split("-")[0]) : 0);
+      if(!byMonth[mo]) byMonth[mo] = {mo};
+      byMonth[mo]["dsr_"+yr] = r.dsr;
+      if(r.oos > 0) byMonth[mo]["oos_"+yr] = r.oos;
+    });
+    return Object.values(byMonth).sort((a,b)=>a.mo-b.mo);
+  },[chartData]);
+
+  const years = useMemo(()=>[...new Set(chartData.map(r=>r.y||parseInt(String(r.month).split("-")[0])))].filter(Boolean).sort(),[chartData]);
+  const yearColors = ["#60a5fa","#f472b6","#34d399","#fbbf24","#a78bfa"];
+
+  if (!selectedCore) return (
+    <div className="space-y-3">
+      <div className="relative">
+        <input className="w-full bg-gray-800 text-white text-sm px-3 py-2 rounded-lg border border-gray-700" placeholder="Search cores by ID or title..." value={search} onChange={e=>setSearch(e.target.value)}/>
+        {filtered.length > 0 && (
+          <div className="absolute z-40 w-full bg-gray-800 border border-gray-700 rounded-lg mt-1 max-h-60 overflow-y-auto">
+            {filtered.map(c=>(
+              <button key={c.id} className="w-full text-left px-3 py-2 hover:bg-gray-700 text-sm flex gap-2" onClick={()=>selectCore(c)}>
+                <span className="text-blue-400 font-mono">{c.id}</span>
+                <span className="text-gray-300 truncate">{c.ti}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <p className="text-gray-500 text-center py-16">Search and select a core to view details</p>
+    </div>
+  );
+
+  const c = selectedCore;
+  const lt = v.lt || 45;
+  const st = statusLabel(c.doc, lt, c.buf);
+  const allIn = c.raw+c.inb+c.pp+c.jfn+c.pq+c.ji+c.fba;
+  const pipeline = [{label:"Raw",val:c.raw},{label:"Inbound",val:c.inb},{label:"Pre-Proc",val:c.pp},{label:"JFN",val:c.jfn},{label:"Proc Q",val:c.pq},{label:"JI",val:c.ji},{label:"FBA",val:c.fba}];
+  const maxPipe = Math.max(...pipeline.map(p=>p.val),1);
+
+  return (
+    <div className="space-y-4">
+      <button className="text-xs text-blue-400 hover:text-blue-300" onClick={()=>{setSelectedCore(null);setSearch("");setHistData(null);}}>← Back to search</button>
+
+      {/* Header */}
+      <div className="flex flex-wrap items-center gap-3">
+        <h2 className="text-lg font-bold text-white">{c.id}</h2>
+        <StatusDot status={st}/>
+        <span className={`text-xs px-2 py-0.5 rounded ${st==="critical"?"bg-red-500/20 text-red-400":st==="warning"?"bg-yellow-500/20 text-yellow-400":"bg-green-500/20 text-green-400"}`}>{st.toUpperCase()}</span>
+        <span className="text-gray-400 text-sm truncate max-w-md">{c.ti}</span>
+      </div>
+      <div className="text-xs text-gray-400 flex flex-wrap gap-4">
+        <span>Vendor: <strong className="text-gray-200">{c.ven}</strong></span>
+        <span>Cost: <strong className="text-gray-200">{fmtP(c.cost)}</strong></span>
+        <span>LT: <strong className="text-gray-200">{lt}d</strong></span>
+        <span>Category: <strong className="text-gray-200">{c.cat||"—"}</strong></span>
+      </div>
+
+      {/* KPIs */}
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+        {[{label:"C.DSR",val:fmt(c.dsr,1)},{label:"7D DSR",val:fmt(c.d7,1)},{label:"DOC",val:fmtD(c.doc),color:docColor(c.doc,lt,c.buf)},{label:"All-In Own",val:fmtD(allIn)},{label:"FBA",val:fmtD(c.fba)}].map(k=>(
+          <div key={k.label} className="bg-gray-800/60 rounded-lg p-2.5">
+            <div className="text-gray-500 text-xs">{k.label}</div>
+            <div className="text-white text-lg font-bold" style={k.color?{color:k.color}:{}}>{k.val}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Profitability Table */}
+      <div className="bg-gray-800/40 rounded-lg p-3">
+        <h3 className="text-sm font-medium text-gray-300 mb-2">Profitability</h3>
+        <table className="w-full text-xs">
+          <thead><tr><th className="text-left text-gray-500 py-1"></th><th className="text-right text-gray-500">Lifetime</th><th className="text-right text-gray-500">Last Year</th><th className="text-right text-gray-500">This Year</th></tr></thead>
+          <tbody>
+            <tr><td className="py-1 text-gray-400">Revenue</td><td className="text-right text-gray-200">{fmtM(cs.ltR)}</td><td className="text-right text-gray-200">{fmtM(cs.lyR)}</td><td className="text-right text-gray-200">{fmtM(cs.tyR)}</td></tr>
+            <tr><td className="py-1 text-gray-400">Profit</td><td className="text-right text-green-400">{fmtM(cs.ltP)}</td><td className="text-right text-green-400">{fmtM(cs.lyP)}</td><td className="text-right text-green-400">{fmtM(cs.tyP)}</td></tr>
+            {cs.ltR > 0 && <tr><td className="py-1 text-gray-500">Margin</td><td className="text-right text-gray-400">{(cs.ltP/cs.ltR*100).toFixed(1)}%</td><td className="text-right text-gray-400">{cs.lyR?(cs.lyP/cs.lyR*100).toFixed(1):0}%</td><td className="text-right text-gray-400">{cs.tyR?(cs.tyP/cs.tyR*100).toFixed(1):0}%</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Pipeline */}
+      <div className="bg-gray-800/40 rounded-lg p-3">
+        <h3 className="text-sm font-medium text-gray-300 mb-2">Inventory Pipeline</h3>
+        <div className="flex gap-1 items-end h-28">
+          {pipeline.map(p=>(
+            <div key={p.label} className="flex-1 flex flex-col items-center gap-1">
+              <span className="text-xs text-gray-300 font-medium">{fmtD(p.val)}</span>
+              <div className="w-full bg-blue-500/30 rounded-t" style={{height: Math.max(4, p.val/maxPipe*80)+"px"}}>
+                <div className="w-full h-full bg-blue-500 rounded-t opacity-80"/>
+              </div>
+              <span className="text-xs text-gray-500 whitespace-nowrap">{p.label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Charts */}
+      {loading && <Spinner msg="Loading history..."/>}
+      {chartData.length > 0 && (
+        <div className="bg-gray-800/40 rounded-lg p-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-2">Monthly DSR (Year over Year)</h3>
+          <ResponsiveContainer width="100%" height={220}>
+            <ComposedChart data={yoyData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151"/>
+              <XAxis dataKey="mo" tick={{fill:"#9ca3af",fontSize:11}} tickFormatter={m=>["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][m]||m}/>
+              <YAxis tick={{fill:"#9ca3af",fontSize:11}}/>
+              <Tooltip contentStyle={{background:"#1f2937",border:"1px solid #374151",borderRadius:8,fontSize:12}} labelFormatter={m=>["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][m]||m}/>
+              <Legend/>
+              {years.map((yr,i)=><Bar key={yr} dataKey={"dsr_"+yr} name={String(yr)} fill={yearColors[i%yearColors.length]} radius={[2,2,0,0]}/>)}
+              {years.map((yr,i)=> yoyData.some(r=>r["oos_"+yr]>0) ? <Line key={"oos"+yr} dataKey={"oos_"+yr} name={yr+" OOS"} stroke="#ef4444" strokeWidth={2} dot={false} strokeDasharray="4 2"/> : null)}
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* DOC Timeline */}
+      {chartData.length > 0 && (
+        <div className="bg-gray-800/40 rounded-lg p-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-2">DOC & Inventory Timeline</h3>
+          <ResponsiveContainer width="100%" height={200}>
+            <ComposedChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151"/>
+              <XAxis dataKey="month" tick={{fill:"#9ca3af",fontSize:10}} tickFormatter={m=>typeof m==='string'?m.slice(5):m}/>
+              <YAxis yAxisId="doc" tick={{fill:"#9ca3af",fontSize:11}}/>
+              <YAxis yAxisId="inv" orientation="right" tick={{fill:"#9ca3af",fontSize:11}}/>
+              <Tooltip contentStyle={{background:"#1f2937",border:"1px solid #374151",borderRadius:8,fontSize:12}}/>
+              <Legend/>
+              <Line yAxisId="doc" dataKey="doc" name="DOC" stroke="#f59e0b" strokeWidth={2} dot={false}/>
+              <Bar yAxisId="inv" dataKey="own" name="All-In Own" fill="#3b82f6" opacity={0.5} radius={[2,2,0,0]}/>
+              <Bar yAxisId="inv" dataKey="fba" name="FBA" fill="#8b5cf6" opacity={0.5} radius={[2,2,0,0]}/>
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Bundles Table */}
+      {coreBundles.length > 0 && (
+        <div className="bg-gray-800/40 rounded-lg p-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-2">Bundles ({coreBundles.length})</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead><tr className="text-gray-500">
+                <th className="text-left px-2 py-1">JLS</th><th className="text-left px-2 py-1">Title</th><th className="text-right px-2 py-1">DSR</th><th className="text-right px-2 py-1">DOC</th><th className="text-right px-2 py-1">FIB Inv</th><th className="text-right px-2 py-1">Price</th><th className="text-right px-2 py-1">GP</th><th className="text-right px-2 py-1">LT Profit</th>
+              </tr></thead>
+              <tbody className="divide-y divide-gray-800/30">
+                {coreBundles.map(b=>{
+                  const f = feesMap[b.j]||{};
+                  const s = salesMap[b.j]||{};
+                  return (
+                    <tr key={b.j} className="hover:bg-gray-800/30">
+                      <td className="px-2 py-1 font-mono text-blue-400">{b.j}</td>
+                      <td className="px-2 py-1 text-gray-300 max-w-[180px] truncate">{b.t}</td>
+                      <td className="px-2 py-1 text-right">{fmt(b.fbaDsr,1)}</td>
+                      <td className="px-2 py-1 text-right">{fmtD(b.doc)}</td>
+                      <td className="px-2 py-1 text-right">{fmtD(b.fibInv)}</td>
+                      <td className="px-2 py-1 text-right">{fmtP(f.pr)}</td>
+                      <td className="px-2 py-1 text-right text-green-400">{fmtP(f.gp)}</td>
+                      <td className="px-2 py-1 text-right text-green-400">{fmtM(s.ltP)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
-      <div className="flex gap-1">{TABS.map((t,i) => <button key={t} onClick={()=>setTab(i)} className={`px-4 py-1.5 text-xs rounded-t-lg ${tab===i?"bg-gray-950 text-blue-400 border-t border-x border-gray-700":"text-gray-500 hover:text-gray-300"}`}>{t}</button>)}</div>
     </div>
+  );
+}
 
-    <div className="p-4">
+// ══════════════════════════════════════════
+// TAB 3: BUNDLE DETAIL
+// ══════════════════════════════════════════
+function BundleDetailTab({bundles, sales, fees, cores}) {
+  const [search, setSearch] = useState("");
+  const [selectedBundle, setSelectedBundle] = useState(null);
+  const [histData, setHistData] = useState(null);
+  const [loading, setLoading] = useState(false);
 
-    {/* ===== PURCHASING PRIORITIES ===== */}
-    {tab===0 && (
-      <div>
-        <div className="flex flex-wrap gap-3 mb-4 items-center">
-          <div className="flex bg-gray-800 rounded-lg overflow-hidden border border-gray-700"><button onClick={()=>setViewMode("vendor")} className={`px-3 py-1.5 text-xs ${viewMode==="vendor"?"bg-blue-600 text-white":"text-gray-400"}`}>By Vendor</button><button onClick={()=>setViewMode("core")} className={`px-3 py-1.5 text-xs ${viewMode==="core"?"bg-blue-600 text-white":"text-gray-400"}`}>By Core</button></div>
-          {viewMode==="core" && <select value={sortBy} onChange={e=>setSortBy(e.target.value)} className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-300"><option value="priority">Priority</option><option value="lt_profit">LT Profit ↓</option><option value="lt_rev">LT Revenue ↓</option><option value="ty_rev">This Yr Rev ↓</option><option value="ly_rev">Last Yr Rev ↓</option></select>}
-          <select value={vf} onChange={e=>setVf(e.target.value)} className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-300">{vendors.map(v=><option key={v} value={v}>{v==="All"?"All Vendors":v}</option>)}</select>
-          <select value={sf} onChange={e=>setSf(e.target.value)} className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-300">{["All","Critical","Warning","Healthy","No Sales"].map(s=><option key={s} value={s}>{s==="All"?"All Status":s}</option>)}</select>
-          <div className="flex items-center gap-2 ml-auto"><span className="text-[10px] text-gray-400">Target DOC:</span><input type="number" value={tDOC} onChange={e=>setTDOC(Math.max(1,+e.target.value||90))} className="w-14 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-center text-white"/></div>
-        </div>
+  const salesMap = useMemo(()=>{const m={};sales.forEach(s=>m[s.j]=s);return m;},[sales]);
+  const feesMap = useMemo(()=>{const m={};fees.forEach(f=>m[f.j]=f);return m;},[fees]);
 
-        {/* CORE VIEW */}
-        {viewMode==="core" && (
-          <div className="bg-gray-800/50 rounded-xl border border-gray-700 overflow-x-auto">
-            <table className="w-full text-xs"><thead><tr className="border-b border-gray-700">
-              <th className={th} style={{width:20}}></th><th className={`${th} text-left`}>Core</th><th className={`${th} text-left`}>Vendor</th><th className={`${th} text-left hidden xl:table-cell`}>Title</th>
-              {sortBy!=="priority"&&<th className={`${th} text-right`}>{sortBy.replace(/_/g," ")}</th>}
-              <th className={`${th} text-right`}>C.DSR</th><th className={`${th} text-right`}>7D</th><th className={`${th} text-center`}>▲▼</th><th className={`${th} text-right`}>DOC</th><th className={`${th} text-right`}>All-In</th><th className={`${th} text-center`}>Seas</th><th className={`${th} text-right`}>LT</th>
-              <th className="w-px bg-gray-600"></th><th className={`${th} text-right`}>Need $</th><th className={`${th} text-right`}>DOC Aft</th><th className={th}></th>
-            </tr></thead><tbody>
-            {coreFlat.slice(0, 200).map(c => {
-              const sc = SC[c.st.c];
-              const pe = (f) => c.jl.reduce((x,j)=>x+(j[f]>0&&j.lr>0?j.lp*(j[f]/j.lr):0),0);
-              let sv = null;
-              if(sortBy==="lt_profit")sv=fmt$(c.ltProfit);else if(sortBy==="lt_rev")sv=fmt$(c.ltRev);else if(sortBy==="ty_rev")sv=fmt$(c.tyRev);else if(sortBy==="ly_rev")sv=fmt$(c.lyRev);
-              return (<tr key={c.id} className="border-b border-gray-800/50 hover:bg-gray-800/50">
-                <td className="py-2 px-2"><div className={`w-2.5 h-2.5 rounded-full ${sc.dt}`}/></td>
-                <td className="py-2 px-2 font-mono text-blue-300 text-[11px]">{c.id}</td>
-                <td className="py-2 px-2 text-gray-500 text-[11px] truncate max-w-20">{c.ven}</td>
-                <td className="py-2 px-2 text-gray-400 truncate max-w-32 hidden xl:table-cell text-[11px]">{c.ti}</td>
-                {sortBy!=="priority"&&<td className="py-2 px-2 text-right font-medium text-yellow-400">{sv}</td>}
-                <td className="py-2 px-2 text-right">{c.dsr.toFixed(1)}</td>
-                <td className="py-2 px-2 text-right">{c.d7.toFixed(1)}</td>
-                <td className={`py-2 px-2 text-center ${c.trendDir==="▲"?"text-green-400":"text-red-400"}`}>{c.trendDir}</td>
-                <td className={`py-2 px-2 text-right font-medium ${c.doc<=c.ltDays?"text-red-400":c.doc<=c.ltDays+c.buf?"text-yellow-400":"text-green-400"}`}>{Math.round(c.doc)}</td>
-                <td className="py-2 px-2 text-right">{c.allInOwn.toLocaleString()}</td>
-                <td className="py-2 px-2 text-center text-gray-700">○</td>
-                <td className="py-2 px-2 text-right text-gray-500">{c.ltDays}d</td>
-                <td className="w-px bg-gray-600"></td>
-                <td className="py-2 px-2 text-right font-medium">{c.need>0?fmt$(c.needCost):"—"}</td>
-                <td className="py-2 px-2 text-right text-gray-300">{c.docAfterBase<9999?`${c.docAfterBase}d`:"—"}</td>
-                <td className="py-2 px-2"><button onClick={()=>{setSelCore(c.id);setTab(1);}} className="text-blue-400 text-[11px]">View</button></td>
-              </tr>);
-            })}
-            </tbody></table>
-          </div>
-        )}
+  const filtered = useMemo(()=>{
+    if (!search || search.length < 2) return [];
+    const s = search.toLowerCase();
+    return bundles.filter(b => b.j.toLowerCase().includes(s) || b.t.toLowerCase().includes(s)).slice(0,10);
+  },[bundles, search]);
 
-        {/* VENDOR VIEW */}
-        {viewMode==="vendor" && (
-          <div className="space-y-4">{vendorGrps.map(vg => (
-            <div key={vg.vendor} className="bg-gray-800/50 rounded-xl border border-gray-700 overflow-hidden">
-              <div className="px-4 py-3 border-b border-gray-700 bg-gray-800/80">
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <div className="flex items-center gap-3">
-                    <span className="font-semibold text-gray-200 text-sm">{vg.vendor}</span>
-                    <span className="text-[10px] text-gray-500">{vg.cores.length} cores</span>
-                    <span className="text-[10px] px-2 py-0.5 bg-gray-700 rounded text-gray-300">LT:{vg.vi.lt||"?"}d</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-[10px]">
-                    {vg.crit>0&&<span className="px-2 py-0.5 bg-red-500/20 text-red-400 rounded-full">{vg.crit}Crit</span>}
-                    {vg.warn>0&&<span className="px-2 py-0.5 bg-yellow-500/20 text-yellow-400 rounded-full">{vg.warn}Warn</span>}
-                    <span className={`px-2 py-0.5 rounded-full font-medium ${vg.meetsMin?"bg-green-500/20 text-green-400":"bg-orange-500/20 text-orange-400"}`}>
-                      {vg.meetsMin?"✓MOQ":`Short: $${vg.shortfall}`}
-                    </span>
-                  </div>
-                </div>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs"><thead><tr className="border-b border-gray-700">
-                  <th className={th} style={{width:20}}></th><th className={`${th} text-left`}>Core</th><th className={`${th} text-left hidden xl:table-cell`}>Title</th>
-                  <th className={`${th} text-right`}>C.DSR</th><th className={`${th} text-right`}>7D</th><th className={`${th} text-center`}>▲▼</th><th className={`${th} text-right`}>DOC</th><th className={`${th} text-right`}>All-In</th><th className={`${th} text-right`}>LT</th>
-                  <th className="w-px bg-gray-600"></th><th className={`${th} text-right`}>Total$</th><th className={`${th} text-right`}>DOC Aft</th><th className={th}></th>
-                </tr></thead><tbody>
-                {vg.cores.map(c => {
-                  const sc = SC[c.st.c];
-                  return (<tr key={c.id} className="border-b border-gray-800/50 hover:bg-gray-800/50">
-                    <td className="py-2 px-2"><div className={`w-2.5 h-2.5 rounded-full ${sc.dt}`}/></td>
-                    <td className="py-2 px-2 font-mono text-blue-300 text-[11px]">{c.id}</td>
-                    <td className="py-2 px-2 text-gray-400 truncate max-w-32 hidden xl:table-cell text-[11px]">{c.ti}</td>
-                    <td className="py-2 px-2 text-right">{c.dsr.toFixed(1)}</td>
-                    <td className="py-2 px-2 text-right">{c.d7.toFixed(1)}</td>
-                    <td className={`py-2 px-2 text-center ${c.trendDir==="▲"?"text-green-400":"text-red-400"}`}>{c.trendDir}</td>
-                    <td className={`py-2 px-2 text-right font-medium ${c.doc<=c.ltDays?"text-red-400":c.doc<=c.ltDays+c.buf?"text-yellow-400":"text-green-400"}`}>{Math.round(c.doc)}</td>
-                    <td className="py-2 px-2 text-right">{c.allInOwn.toLocaleString()}</td>
-                    <td className="py-2 px-2 text-right text-gray-500">{c.ltDays}d</td>
-                    <td className="w-px bg-gray-600"></td>
-                    <td className="py-2 px-2 text-right font-medium text-white">{c.totalQ>0?fmt$(c.totalP):"—"}</td>
-                    <td className="py-2 px-2 text-right text-gray-300">{c.sqDOC<9999?`${c.sqDOC}d`:"—"}</td>
-                    <td className="py-2 px-2"><button onClick={()=>{setSelCore(c.id);setTab(1);}} className="text-blue-400 text-[11px]">View</button></td>
-                  </tr>);
-                })}
-                <tr className="border-t-2 border-gray-600 bg-gray-900/80 text-[11px] font-medium">
-                  <td colSpan={9} className="py-2 px-3 text-gray-400">TOTAL</td>
-                  <td className="w-px bg-gray-600"></td>
-                  <td className="py-2 px-2 text-right text-white font-bold">{fmt$(vg.grandP)}</td>
-                  <td colSpan={2}></td>
-                </tr>
-                </tbody></table>
-              </div>
-            </div>
-          ))}</div>
-        )}
-      </div>
-    )}
+  const selectBundle = useCallback(async(b)=>{
+    setSelectedBundle(b);
+    setSearch(b.j);
+    setLoading(true);
+    setHistData(null);
+    try {
+      const r = await fetch(API+"?action=bundleSummary&id="+encodeURIComponent(b.j));
+      const d = await r.json();
+      setHistData(d);
+    } catch(e) { console.error(e); }
+    setLoading(false);
+  },[]);
 
-    {/* ===== CORE DETAIL ===== */}
-    {tab===1 && (
-      <div>
-        <input type="text" placeholder="Search core #, title..." value={search} onChange={e=>{setSearch(e.target.value);if(e.target.value)setSelCore(null);}} className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none mb-4"/>
-        {!selCore&&search&&(<div className="bg-gray-800 rounded-xl border border-gray-700 mb-4">{searchRes.length===0?<div className="p-4 text-gray-500">No results</div>:searchRes.slice(0,20).map(c=><div key={c.id} onClick={()=>{setSelCore(c.id);setSearch("");}} className="flex items-center gap-3 px-4 py-3 border-b border-gray-700 hover:bg-gray-750 cursor-pointer"><div className={`w-2.5 h-2.5 rounded-full ${SC[c.st.c].dt}`}/><span className="font-mono text-blue-300">{c.id}</span><span className="text-gray-400">{c.ti}</span></div>)}</div>)}
-        {!selCore&&!search&&<div className="text-center py-16 text-gray-600"><div className="text-3xl mb-2">🔍</div>Search or click View</div>}
-        {core && (
-          <div>
-            <div className="bg-gray-800/60 rounded-xl p-4 border border-gray-700 mb-4">
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-mono text-blue-400 font-bold text-base">{core.id}</span>
-                    <span className={`px-2 py-0.5 rounded-full text-[10px] ${SC[core.st.c].bg} ${SC[core.st.c].tx}`}>{core.st.l}</span>
-                    {core.oosCount>0&&<span className="px-2 py-0.5 rounded-full text-[10px] bg-red-500/20 text-red-400">{core.oosCount} OOS</span>}
-                  </div>
-                  <div className="text-xs text-gray-400 mt-1">{core.ti}</div>
-                </div>
-                <div className="text-right text-[10px] text-gray-500">{core.ven} · ${core.cost}/pc · LT:{core.ltDays}d · {core.cat}</div>
-              </div>
-            </div>
+  // Parse history data
+  const salesChart = useMemo(()=>{
+    if (!histData?.bundleSales) return [];
+    return histData.bundleSales.map(r=>({
+      month: typeof r.month==='string' ? (r.month.length>7 ? r.month.slice(0,7) : r.month) : r.month ? new Date(r.month).toISOString().slice(0,7) : '',
+      units: r.units||r.Units||0,
+      rev: r.rev||r.Revenue||0,
+      profit: r.profit||r.Profit||0,
+      avgPrice: r.avgPrice||r["Avg Price"]||0
+    })).sort((a,b)=>a.month<b.month?-1:1);
+  },[histData]);
 
-            <div className="grid grid-cols-5 gap-2 mb-4">
-              {[["C.DSR",core.dsr.toFixed(1),"text-white"],["7D DSR",core.d7.toFixed(1),core.d7>core.dsr?"text-green-400":"text-red-400"],["DOC",`${Math.round(core.doc)}d`,core.doc<=core.ltDays?"text-red-400":"text-green-400"],["All-In Own",core.allInOwn.toLocaleString(),"text-white"],["Inbound",core.inb.toLocaleString(),"text-blue-400"]].map(([l,v,cl])=>
-                <div key={l} className="bg-gray-800/60 rounded-lg p-3 border border-gray-700"><div className="text-[10px] text-gray-500">{l}</div><div className={`text-lg font-bold ${cl}`}>{v}</div></div>
-              )}
-            </div>
+  const priceChart = useMemo(()=>{
+    if (!histData?.priceHist) return [];
+    return histData.priceHist.map(r=>({
+      month: typeof r.month==='string' ? (r.month.length>7 ? r.month.slice(0,7) : r.month) : r.month ? new Date(r.month).toISOString().slice(0,7) : '',
+      avgPrice: r.avgPrice||r["Avg Price"]||0,
+      avgGp: r.avgGp||r["Avg GP"]||0,
+      avgFee: r.avgFee||r["Avg Total Fee"]||0
+    })).sort((a,b)=>a.month<b.month?-1:1);
+  },[histData]);
 
-            {/* Profitability */}
-            <div className="bg-gray-800/60 rounded-xl p-4 border border-gray-700 mb-4">
-              <div className="text-xs text-gray-300 mb-3 font-medium">Profitability (all bundles)</div>
-              <table className="w-full text-xs"><thead><tr className="border-b border-gray-700"><th className="py-2 px-3 text-left text-gray-500 text-[10px]"></th><th className="py-2 px-3 text-right text-gray-500 text-[10px]">Lifetime</th><th className="py-2 px-3 text-right text-gray-500 text-[10px]">Last Yr</th><th className="py-2 px-3 text-right text-gray-500 text-[10px]">This Yr</th></tr></thead><tbody>
-                <tr className="border-b border-gray-800"><td className="py-2 px-3 text-gray-400">Revenue</td><td className="py-2 px-3 text-right font-bold text-white">{fmt$(core.ltRev)}</td><td className="py-2 px-3 text-right text-gray-300">{fmt$(core.lyRev)}</td><td className="py-2 px-3 text-right text-gray-300">{fmt$(core.tyRev)}</td></tr>
-                <tr className="border-b border-gray-800"><td className="py-2 px-3 text-gray-400">Profit</td><td className="py-2 px-3 text-right font-bold text-green-400">{fmt$(core.ltProfit)}</td><td className="py-2 px-3 text-right text-green-400/70">{fmt$(core.jl.reduce((s,b)=>s+(b.ly>0&&b.lr>0?b.lp*(b.ly/b.lr):0),0))}</td><td className="py-2 px-3 text-right text-green-400/70">{fmt$(core.jl.reduce((s,b)=>s+(b.ty>0&&b.lr>0?b.lp*(b.ty/b.lr):0),0))}</td></tr>
-                <tr><td className="py-2 px-3 text-gray-400">Margin</td><td className="py-2 px-3 text-right font-bold text-blue-400">{core.wMargin}%</td><td colSpan={2}></td></tr>
-              </tbody></table>
-            </div>
-
-            {/* Pipeline */}
-            <div className="bg-gray-800/60 rounded-xl p-4 border border-gray-700 mb-4">
-              <div className="text-xs text-gray-300 mb-3 font-medium">Inventory Pipeline</div>
-              <div className="flex gap-2 items-end">
-                {[{n:"Raw",v:core.raw,cl:"bg-amber-500"},{n:"Inbound",v:core.inb,cl:"bg-orange-500"},{n:"Pre-Proc",v:core.pp,cl:"bg-yellow-500"},{n:"JFN",v:core.jfn,cl:"bg-lime-500"},{n:"Proc Q",v:core.pq,cl:"bg-emerald-500"},{n:"JI",v:core.ji,cl:"bg-teal-500"},{n:"FBA",v:core.fba,cl:"bg-blue-500"}].map(s=>{
-                  const mx=Math.max(core.raw,core.inb,core.pp,core.jfn,core.pq,core.ji,core.fba,1);
-                  return(<div key={s.n} className="flex-1 flex flex-col items-center gap-1"><span className="text-[10px] text-gray-300 font-medium">{s.v.toLocaleString()}</span><div className={`w-full rounded-t-md ${s.cl}`} style={{height:Math.max(8,s.v/mx*100)}}/><span className="text-[9px] text-gray-500">{s.n}</span></div>);
-                })}
-              </div>
-              <div className="mt-2 text-right text-[10px] text-gray-500">Total: <span className="text-white font-medium">{core.allInOwn.toLocaleString()}</span></div>
-            </div>
-
-            {/* Bundles */}
-            <div className="bg-gray-800/60 rounded-xl p-4 border border-gray-700 mb-4">
-              <div className="text-xs text-gray-300 mb-3 font-medium">Bundles ({core.jl.length}){core.oosCount>0&&<span className="text-red-400 ml-2">{core.oosCount} OOS</span>}</div>
-              <div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr className="border-b border-gray-700">
-                <th className={`${th} text-left`}>JLS</th><th className={`${th} text-left`}>Title</th><th className={`${th} text-right`}>DSR</th><th className={`${th} text-right`}>%</th><th className={`${th} text-right`}>CompDOC</th><th className={`${th} text-right`}>FIBDOC</th>
-                <th className="w-px bg-gray-600"></th><th className={`${th} text-right`}>Price</th><th className={`${th} text-right`}>GP</th><th className={`${th} text-right`}>LT Profit</th><th className={`${th} text-center`}>Status</th><th className={th}></th>
-              </tr></thead><tbody>
-              {[...core.jl].sort((a,b)=>b.cd-a.cd).map(b=>
-                <tr key={b.j} className={`border-b border-gray-800 hover:bg-gray-800/50 ${b.oo?"bg-red-500/5":""}`}>
-                  <td className="py-2 px-2 font-mono text-blue-300">{b.j}</td>
-                  <td className="py-2 px-2 text-gray-400 truncate max-w-36">{b.t}</td>
-                  <td className="py-2 px-2 text-right font-medium">{b.cd.toFixed(1)}</td>
-                  <td className="py-2 px-2 text-right text-gray-400">{b.pctSales}%</td>
-                  <td className={`py-2 px-2 text-right ${b.compDOC<=core.ltDays?"text-red-400":"text-green-400"}`}>{b.compDOC<9999?`${b.compDOC}d`:"∞"}</td>
-                  <td className={`py-2 px-2 text-right ${b.fibDoc<=core.ltDays?"text-red-400":"text-green-400"}`}>{b.fibDoc>0?`${Math.round(b.fibDoc)}d`:"∞"}</td>
-                  <td className="w-px bg-gray-600"></td>
-                  <td className="py-2 px-2 text-right">${b.pr.toFixed(2)}</td>
-                  <td className="py-2 px-2 text-right text-green-400">${b.gp.toFixed(2)}</td>
-                  <td className="py-2 px-2 text-right text-green-400">{fmt$(b.lp)}</td>
-                  <td className="py-2 px-2 text-center">{b.oo?<span className="px-1.5 py-0.5 bg-red-500/20 text-red-400 rounded text-[9px] font-bold">OOS</span>:<span className="text-green-400">●</span>}</td>
-                  <td className="py-2 px-2"><button onClick={()=>{setSelBundle({...b,coreId:core.id});setTab(2);}} className="text-blue-400 text-[10px]">Detail</button></td>
-                </tr>
-              )}
-              </tbody></table></div>
-            </div>
-
-            {/* Purchase Rec */}
-            <div className={`rounded-xl p-4 border-2 ${SC[core.st.c].bg} ${SC[core.st.c].bd}`}>
-              <div className="text-xs font-medium text-gray-300 mb-2">Purchase Recommendation</div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                <div><span className="text-gray-500 text-[10px]">Current DOC</span><div className={`font-bold ${core.doc<=core.ltDays?"text-red-400":"text-green-400"}`}>{Math.round(core.doc)}d</div></div>
-                <div><span className="text-gray-500 text-[10px]">Qty for {tDOC}d</span><div className="font-bold text-white">{core.need>0?core.need.toLocaleString():"None"}</div></div>
-                <div><span className="text-gray-500 text-[10px]">Cost</span><div className="font-bold text-yellow-400">{fmt$(core.needCost)}</div></div>
-                <div><span className="text-gray-500 text-[10px]">DOC After</span><div className="font-bold text-blue-400">{core.docAfterBase<9999?`${core.docAfterBase}d`:"∞"}</div></div>
-              </div>
-            </div>
+  if (!selectedBundle) return (
+    <div className="space-y-3">
+      <div className="relative">
+        <input className="w-full bg-gray-800 text-white text-sm px-3 py-2 rounded-lg border border-gray-700" placeholder="Search bundles by JLS # or title..." value={search} onChange={e=>setSearch(e.target.value)}/>
+        {filtered.length > 0 && (
+          <div className="absolute z-40 w-full bg-gray-800 border border-gray-700 rounded-lg mt-1 max-h-60 overflow-y-auto">
+            {filtered.map(b=>(
+              <button key={b.j} className="w-full text-left px-3 py-2 hover:bg-gray-700 text-sm flex gap-2" onClick={()=>selectBundle(b)}>
+                <span className="text-blue-400 font-mono">{b.j}</span>
+                <span className="text-gray-300 truncate">{b.t}</span>
+              </button>
+            ))}
           </div>
         )}
       </div>
-    )}
-
-    {/* ===== BUNDLE DETAIL ===== */}
-    {tab===2 && (
-      <div>
-        <input type="text" placeholder="Search JLS #, title, core..." value={bSearch} onChange={e=>{setBSearch(e.target.value);setSelBundle(null);}} className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none mb-4"/>
-        {bundleDetail && (
-          <div className="mb-6">
-            <button onClick={()=>setSelBundle(null)} className="text-blue-400 text-xs mb-3">← Back</button>
-            <div className="bg-gray-800/60 rounded-xl p-4 border border-gray-700">
-              <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
-                <div className="flex items-center gap-2"><span className="font-mono text-blue-400 font-bold text-sm">{bundleDetail.j}</span><span className="text-gray-400">{bundleDetail.t}</span>{bundleDetail.oo&&<span className="px-2 py-0.5 bg-red-500/20 text-red-400 rounded text-[10px] font-bold">OOS</span>}</div>
-                <button onClick={()=>{setSelCore(bundleDetail.core.id);setTab(1);setSearch("");}} className="text-blue-400 text-[10px]">Core→{bundleDetail.core.id}</button>
-              </div>
-              <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-4">
-                {[["DSR",bundleDetail.cd.toFixed(1),"text-white"],["% Core",`${bundleDetail.pctSales}%`,"text-blue-400"],["CompDOC",bundleDetail.compDOC<9999?`${bundleDetail.compDOC}d`:"∞","text-green-400"],["FIBDOC",bundleDetail.fibDoc>0?`${Math.round(bundleDetail.fibDoc)}d`:"∞","text-green-400"],["FBA",bundleDetail.fb.toLocaleString(),"text-white"],["Price",`$${bundleDetail.pr.toFixed(2)}`,"text-white"]].map(([l,v,cl])=>
-                  <div key={l} className="bg-gray-900/50 rounded-lg p-3 border border-gray-700"><div className="text-[10px] text-gray-500">{l}</div><div className={`text-base font-bold ${cl}`}>{v}</div></div>
-                )}
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                  <div className="text-xs text-gray-300 mb-2 font-medium">Profitability</div>
-                  <div className="grid grid-cols-2 gap-3">
-                    {[["COGS",`$${bundleDetail.co.toFixed(2)}`,"text-white"],["AICOGS",`${bundleDetail.aicogs.toFixed(1)}%`,"text-gray-400"],["GP",`$${bundleDetail.gp.toFixed(2)}`,"text-green-400"],["Margin",bundleDetail.pr>0?`${(bundleDetail.gp/bundleDetail.pr*100).toFixed(0)}%`:"—","text-blue-400"],["BEACoS",bundleDetail.beAcos>0?`${(bundleDetail.beAcos*100).toFixed(0)}%`:"—","text-orange-400"],["LT Profit",fmt$(bundleDetail.lp),"text-green-400"]].map(([l,v,cl])=>
-                      <div key={l}><div className="text-[10px] text-gray-500">{l}</div><div className={`text-sm font-bold ${cl}`}>{v}</div></div>
-                    )}
-                  </div>
-                </div>
-                <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                  <div className="text-xs text-gray-300 mb-2 font-medium">Revenue</div>
-                  <table className="w-full text-xs"><tbody>
-                    <tr className="border-b border-gray-800"><td className="py-1 text-gray-500">Lifetime</td><td className="py-1 text-right font-bold text-white">{fmt$(bundleDetail.lr)}</td></tr>
-                    <tr className="border-b border-gray-800"><td className="py-1 text-gray-500">Last Yr</td><td className="py-1 text-right">{fmt$(bundleDetail.ly)}</td></tr>
-                    <tr className="border-b border-gray-800"><td className="py-1 text-gray-500">This Yr</td><td className="py-1 text-right">{fmt$(bundleDetail.ty)}</td></tr>
-                    <tr><td className="py-1 text-gray-500">YoY</td><td className={`py-1 text-right font-bold ${bundleDetail.ty>=bundleDetail.ly?"text-green-400":"text-red-400"}`}>{bundleDetail.ly>0?`${((bundleDetail.ty-bundleDetail.ly)/bundleDetail.ly*100).toFixed(0)}%`:"—"}</td></tr>
-                  </tbody></table>
-                </div>
-              </div>
-              {/* Recent sales breakdown */}
-              <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700 mb-4">
-                <div className="text-xs text-gray-300 mb-2 font-medium">Recent Sales</div>
-                <div className="grid grid-cols-4 gap-3">
-                  {[["This Month",bundleDetail.tmU,bundleDetail.tmR],["Last Month",bundleDetail.lmU,bundleDetail.lmR],["Last 7 Days",bundleDetail.l7U,bundleDetail.l7R],["Last 28 Days",bundleDetail.l28U,bundleDetail.l28R]].map(([l,u,r])=>
-                    <div key={l}><div className="text-[10px] text-gray-500">{l}</div><div className="text-sm font-bold text-white">{u.toLocaleString()} <span className="text-gray-500 font-normal text-[10px]">({fmt$(r)})</span></div></div>
-                  )}
-                </div>
-              </div>
-              <div className="bg-gray-900/50 rounded-lg p-4 border border-gray-700">
-                <div className="text-xs text-gray-300 mb-2 font-medium">Price Insight</div>
-                <div className="text-[11px] text-gray-400">{bundleDetail.ty<bundleDetail.ly?<span>Revenue <span className="text-red-400 font-medium">down YoY</span>. Consider testing lower price or reducing ad spend.</span>:<span>Revenue <span className="text-green-400 font-medium">up YoY</span>. Current pricing effective.</span>}</div>
-              </div>
-            </div>
-          </div>
-        )}
-        {!selBundle && (
-          <div className="bg-gray-800/50 rounded-xl border border-gray-700 overflow-x-auto">
-            <table className="w-full text-xs"><thead><tr className="border-b border-gray-700">
-              <th className={`${th} text-left`}>JLS</th><th className={`${th} text-left`}>Title</th><th className={`${th} text-left`}>Core</th><th className={`${th} text-right`}>DSR</th><th className={`${th} text-right`}>FIBDOC</th>
-              <th className="w-px bg-gray-600"></th><th className={`${th} text-right`}>Price</th><th className={`${th} text-right`}>GP</th><th className={`${th} text-right`}>LT Profit</th><th className={`${th} text-center`}>OOS</th><th className={th}></th>
-            </tr></thead><tbody>
-            {bSearchRes.map(b =>
-              <tr key={b.j+b.coreId} className={`border-b border-gray-800 hover:bg-gray-800/50 cursor-pointer ${b.oo?"bg-red-500/5":""}`} onClick={()=>setSelBundle(b)}>
-                <td className="py-2 px-2 font-mono text-blue-300">{b.j}</td>
-                <td className="py-2 px-2 text-gray-400 truncate max-w-40">{b.t}</td>
-                <td className="py-2 px-2 font-mono text-gray-300">{b.coreId}</td>
-                <td className="py-2 px-2 text-right">{b.cd.toFixed(1)}</td>
-                <td className="py-2 px-2 text-right">{b.fibDoc>0?`${Math.round(b.fibDoc)}d`:"∞"}</td>
-                <td className="w-px bg-gray-600"></td>
-                <td className="py-2 px-2 text-right">${b.pr.toFixed(2)}</td>
-                <td className="py-2 px-2 text-right text-green-400">${b.gp.toFixed(2)}</td>
-                <td className="py-2 px-2 text-right text-green-400">{fmt$(b.lp)}</td>
-                <td className="py-2 px-2 text-center">{b.oo?<span className="text-red-400 font-bold">OOS</span>:<span className="text-green-400">●</span>}</td>
-                <td className="py-2 px-2"><span className="text-blue-400 text-[10px]">→</span></td>
-              </tr>
-            )}
-            </tbody></table>
-          </div>
-        )}
-      </div>
-    )}
-
-    {/* ===== AI ADVISOR ===== */}
-    {tab===3 && (
-      <div>
-        <div className="bg-gray-800/60 rounded-xl p-5 border border-gray-700 mb-4">
-          <div className="text-xs text-gray-300 mb-3 font-medium">AI Analysis</div>
-          <div className="flex gap-3">
-            <select value={aiCore} onChange={e=>setAiCore(e.target.value)} className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-300">
-              <option value="">Select core...</option>
-              {enriched.sort((a,b)=>a.st.p-b.st.p).slice(0,100).map(c=><option key={c.id} value={c.id}>{c.st.l==="Critical"?"🔴":c.st.l==="Warning"?"🟡":"🟢"} {c.id}—{c.ti.slice(0,35)}</option>)}
-            </select>
-            <button onClick={()=>aiCore&&runAI(aiCore)} disabled={!aiCore||aiLoad} className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 rounded-lg text-xs font-medium">{aiLoad?"...":"Analyze"}</button>
-          </div>
-        </div>
-        {aiLoad&&<div className="bg-gray-800/60 rounded-xl p-8 border border-gray-700 text-center animate-pulse text-gray-400">Analyzing...</div>}
-        {aiRes&&!aiLoad&&<div className="bg-gray-800/60 rounded-xl p-5 border border-gray-700"><div className="text-xs text-blue-400 mb-3 font-medium">Recommendation</div><div className="text-xs text-gray-300 whitespace-pre-wrap leading-relaxed">{aiRes}</div></div>}
-        {!aiRes&&!aiLoad&&<div className="text-center py-16 text-gray-600">🤖 Select a core</div>}
-      </div>
-    )}
+      <p className="text-gray-500 text-center py-16">Search and select a bundle to view details</p>
     </div>
-  </div>
+  );
+
+  const b = selectedBundle;
+  const f = feesMap[b.j] || {};
+  const s = salesMap[b.j] || {};
+  const margin = f.pr ? (f.gp / f.pr * 100) : 0;
+
+  return (
+    <div className="space-y-4">
+      <button className="text-xs text-blue-400 hover:text-blue-300" onClick={()=>{setSelectedBundle(null);setSearch("");setHistData(null);}}>← Back to search</button>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <h2 className="text-lg font-bold text-white">{b.j}</h2>
+        <span className="text-gray-400 text-sm truncate max-w-md">{b.t}</span>
+        {b.core1 && <span className="text-xs text-blue-400">Core: {b.core1}</span>}
+      </div>
+
+      {/* KPIs */}
+      <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
+        {[{l:"FBA DSR",v:fmt(b.fbaDsr,1)},{l:"DOC",v:fmtD(b.doc)},{l:"FIB Inv",v:fmtD(b.fibInv)},{l:"Price",v:fmtP(f.pr)},{l:"GP",v:fmtP(f.gp),c:"text-green-400"},{l:"Margin",v:margin.toFixed(1)+"%"}].map(k=>(
+          <div key={k.l} className="bg-gray-800/60 rounded-lg p-2.5">
+            <div className="text-gray-500 text-xs">{k.l}</div>
+            <div className={`text-white text-lg font-bold ${k.c||""}`}>{k.v}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Profitability */}
+      <div className="bg-gray-800/40 rounded-lg p-3">
+        <h3 className="text-sm font-medium text-gray-300 mb-2">Profitability</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+          {[{l:"COGS",v:fmtP(f.pdmtCogs)},{l:"AICOGS%",v:f.pr?(f.aicogs/f.pr*100).toFixed(1)+"%":"—"},{l:"BE Price",v:fmtP(f.bePr)},{l:"BE ACoS",v:f.beAcos?(f.beAcos*100).toFixed(1)+"%":"—"}].map(k=>(
+            <div key={k.l}><span className="text-gray-500">{k.l}: </span><span className="text-gray-200">{k.v}</span></div>
+          ))}
+        </div>
+      </div>
+
+      {/* Revenue Table */}
+      <div className="bg-gray-800/40 rounded-lg p-3">
+        <h3 className="text-sm font-medium text-gray-300 mb-2">Revenue</h3>
+        <table className="w-full text-xs">
+          <thead><tr><th className="text-left text-gray-500 py-1"></th><th className="text-right text-gray-500">Units</th><th className="text-right text-gray-500">Revenue</th><th className="text-right text-gray-500">Profit</th></tr></thead>
+          <tbody>
+            {[{l:"Lifetime",u:s.ltU,r:s.ltR,p:s.ltP},{l:"Last Year",u:s.lyU,r:s.lyR,p:s.lyP},{l:"This Year",u:s.tyU,r:s.tyR,p:s.tyP},{l:"This Month",u:s.tmU,r:s.tmR,p:s.tmP},{l:"Last 7 Days",u:s.l7U,r:s.l7R,p:s.l7P},{l:"Last 28 Days",u:s.l28U,r:s.l28R,p:s.l28P}].map(r=>(
+              <tr key={r.l}><td className="py-1 text-gray-400">{r.l}</td><td className="text-right text-gray-200">{fmtD(r.u)}</td><td className="text-right text-gray-200">{fmtM(r.r)}</td><td className="text-right text-green-400">{fmtM(r.p)}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Charts */}
+      {loading && <Spinner msg="Loading bundle history..."/>}
+
+      {salesChart.length > 0 && (
+        <div className="bg-gray-800/40 rounded-lg p-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-2">Sales History</h3>
+          <ResponsiveContainer width="100%" height={200}>
+            <ComposedChart data={salesChart}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151"/>
+              <XAxis dataKey="month" tick={{fill:"#9ca3af",fontSize:10}} tickFormatter={m=>m?m.slice(5):""}/>
+              <YAxis yAxisId="u" tick={{fill:"#9ca3af",fontSize:11}}/>
+              <YAxis yAxisId="r" orientation="right" tick={{fill:"#9ca3af",fontSize:11}}/>
+              <Tooltip contentStyle={{background:"#1f2937",border:"1px solid #374151",borderRadius:8,fontSize:12}}/>
+              <Legend/>
+              <Bar yAxisId="u" dataKey="units" name="Units" fill="#3b82f6" radius={[2,2,0,0]}/>
+              <Line yAxisId="r" dataKey="rev" name="Revenue" stroke="#22c55e" strokeWidth={2} dot={false}/>
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {priceChart.length > 0 && (
+        <div className="bg-gray-800/40 rounded-lg p-3">
+          <h3 className="text-sm font-medium text-gray-300 mb-2">Price & Profit History</h3>
+          <ResponsiveContainer width="100%" height={200}>
+            <LineChart data={priceChart}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151"/>
+              <XAxis dataKey="month" tick={{fill:"#9ca3af",fontSize:10}} tickFormatter={m=>m?m.slice(5):""}/>
+              <YAxis tick={{fill:"#9ca3af",fontSize:11}}/>
+              <Tooltip contentStyle={{background:"#1f2937",border:"1px solid #374151",borderRadius:8,fontSize:12}} formatter={v=>"$"+Number(v).toFixed(2)}/>
+              <Legend/>
+              <Line dataKey="avgPrice" name="Avg Price" stroke="#f59e0b" strokeWidth={2} dot={false}/>
+              <Line dataKey="avgGp" name="Avg GP" stroke="#22c55e" strokeWidth={2} dot={false}/>
+              <Line dataKey="avgFee" name="Avg Fee" stroke="#ef4444" strokeWidth={1} dot={false} strokeDasharray="4 2"/>
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════
+// TAB 4: AI ADVISOR
+// ══════════════════════════════════════════
+function AIAdvisorTab({cores, vendors, sales}) {
+  const [selectedCore, setSelectedCore] = useState("");
+  const [analysis, setAnalysis] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState("");
+
+  const filtered = useMemo(()=>{
+    if (!search || search.length < 2) return [];
+    return cores.filter(c=>c.id.toLowerCase().includes(search.toLowerCase())||c.ti.toLowerCase().includes(search.toLowerCase())).slice(0,8);
+  },[cores,search]);
+
+  const analyze = async()=>{
+    const core = cores.find(c=>c.id===selectedCore);
+    if(!core) return;
+    setLoading(true);
+    setAnalysis("");
+    const v = vendors.find(vn=>vn.name===core.ven)||{};
+    const prompt = `You are an Amazon FBA inventory analyst. Analyze this core product and give a concise recommendation.
+
+Core: ${core.id} - ${core.ti}
+DSR: ${core.dsr} | 7D DSR: ${core.d7} | DOC: ${core.doc} days
+All-In Own: ${core.own} | FBA: ${core.fba} | Raw: ${core.raw}
+Vendor: ${core.ven} | Lead Time: ${v.lt||45}d | Cost: $${core.cost}/pc
+MOQ: ${core.moq} pcs | Buffer: ${core.buf} days
+Active: ${core.active} | Category: ${core.cat}
+
+Give: 1) BUY/WAIT/MONITOR recommendation 2) Suggested qty if BUY 3) Risk level 4) One creative idea. Keep it under 150 words.`;
+
+    try {
+      const r = await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({model:"claude-sonnet-4-5-20250514",max_tokens:1000,messages:[{role:"user",content:prompt}]})
+      });
+      const d = await r.json();
+      setAnalysis(d.content?.[0]?.text || d.error?.message || "No response");
+    } catch(e) { setAnalysis("Error: "+e.message); }
+    setLoading(false);
+  };
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <h2 className="text-lg font-bold text-white">AI Purchase Advisor</h2>
+      <div className="relative">
+        <input className="w-full bg-gray-800 text-white text-sm px-3 py-2 rounded-lg border border-gray-700" placeholder="Search core..." value={search} onChange={e=>{setSearch(e.target.value);setSelectedCore("");}}/>
+        {filtered.length > 0 && !selectedCore && (
+          <div className="absolute z-40 w-full bg-gray-800 border border-gray-700 rounded-lg mt-1 max-h-48 overflow-y-auto">
+            {filtered.map(c=>(
+              <button key={c.id} className="w-full text-left px-3 py-2 hover:bg-gray-700 text-sm" onClick={()=>{setSelectedCore(c.id);setSearch(c.id+" - "+c.ti);}}>
+                <span className="text-blue-400 font-mono">{c.id}</span> <span className="text-gray-400">{c.ti}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <button disabled={!selectedCore||loading} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm rounded-lg" onClick={analyze}>
+        {loading ? "Analyzing..." : "Analyze"}
+      </button>
+      {analysis && (
+        <div className="bg-gray-800/60 rounded-lg p-4 text-sm text-gray-200 whitespace-pre-wrap border border-gray-700">{analysis}</div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════
+// MAIN APP
+// ══════════════════════════════════════════
+export default function App() {
+  const [tab, setTab] = useState(0);
+  const [data, setData] = useState(null);
+  const [dashData, setDashData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [filter, setFilter] = useState("active");
+  const [showSettings, setShowSettings] = useState(false);
+
+  const loadData = useCallback(async()=>{
+    setLoading(true);
+    setError(null);
+    try {
+      const [liveRes, dashRes] = await Promise.all([
+        fetch(API+"?action=live"),
+        fetch(API+"?action=dashboard")
+      ]);
+      const live = await liveRes.json();
+      const dash = await dashRes.json();
+      if (live.error) throw new Error(live.error);
+      setData(live);
+      setDashData(dash);
+    } catch(e) { setError(e.message); }
+    setLoading(false);
+  },[]);
+
+  useEffect(()=>{ loadData(); },[loadData]);
+
+  // Counts for header
+  const counts = useMemo(()=>{
+    if (!data) return {cr:0,wa:0,he:0};
+    const venMap = {};
+    data.vendors?.forEach(v=>venMap[v.name]=v);
+    let cr=0,wa=0,he=0;
+    data.cores?.forEach(c=>{
+      if (c.active !== "Yes") return;
+      const v = venMap[c.ven]||{};
+      const lt = v.lt||45;
+      const st = statusLabel(c.doc, lt, c.buf);
+      if(st==="critical")cr++;else if(st==="warning")wa++;else he++;
+    });
+    return {cr,wa,he};
+  },[data]);
+
+  // Dashboard chart
+  const monthlyChart = useMemo(()=>{
+    if (!dashData?.monthlyTotals) return [];
+    return dashData.monthlyTotals.map(r=>({
+      month: typeof r.Month==='string' ? (r.Month.length>7?r.Month.slice(0,7):r.Month) : r.month ? (typeof r.month==='string'&&r.month.length>7?r.month.slice(0,7):r.month) : '',
+      rev: r.Revenue||r.rev||0,
+      profit: r.Profit||r.profit||0,
+      units: r.Units||r.units||0
+    })).filter(r=>r.month).sort((a,b)=>a.month<b.month?-1:1);
+  },[dashData]);
+
+  if (loading) return <div className="min-h-screen bg-gray-950 flex items-center justify-center"><Spinner msg="Loading live data..."/></div>;
+  if (error) return <div className="min-h-screen bg-gray-950 flex items-center justify-center text-red-400 p-4"><div><p className="text-lg font-bold">Error loading data</p><p className="text-sm mt-1">{error}</p><button className="mt-3 px-4 py-2 bg-blue-600 text-white rounded text-sm" onClick={loadData}>Retry</button></div></div>;
+  if (!data) return null;
+
+  const tabs = ["Purchasing","Core Detail","Bundle Detail","AI Advisor"];
+
+  return (
+    <div className="min-h-screen bg-gray-950 text-gray-100">
+      {/* Header */}
+      <header className="bg-gray-900 border-b border-gray-800 px-4 py-2.5 flex flex-wrap items-center gap-3">
+        <h1 className="text-base font-bold text-white">Core Visualizer</h1>
+        <span className="text-xs text-green-400 bg-green-400/10 px-2 py-0.5 rounded">LIVE — {data.cores?.length} cores</span>
+        <div className="flex gap-1.5 text-xs">
+          <span className="bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded">{counts.cr} Crit</span>
+          <span className="bg-yellow-500/20 text-yellow-400 px-1.5 py-0.5 rounded">{counts.wa} Warn</span>
+          <span className="bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded">{counts.he} OK</span>
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <button className="text-gray-400 hover:text-white text-sm px-2 py-1 rounded hover:bg-gray-800" onClick={loadData}>↻ Refresh</button>
+          <button className="text-gray-400 hover:text-white text-sm px-2 py-1 rounded hover:bg-gray-800" onClick={()=>setShowSettings(!showSettings)}>⚙️</button>
+        </div>
+      </header>
+
+      {/* Settings Panel */}
+      {showSettings && (
+        <div className="bg-gray-900 border-b border-gray-800 px-4 py-3">
+          <div className="flex items-center gap-4 text-xs">
+            <span className="text-gray-400">Filter:</span>
+            {[["active","Active Only"],["all","All"],["ignored","Ignored Only"]].map(([v,l])=>(
+              <button key={v} className={`px-2 py-1 rounded ${filter===v?"bg-blue-600 text-white":"bg-gray-800 text-gray-400 hover:text-white"}`} onClick={()=>setFilter(v)}>{l}</button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Tabs */}
+      <nav className="bg-gray-900/50 border-b border-gray-800 px-4 flex gap-0">
+        {tabs.map((t,i)=>(
+          <button key={t} className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${tab===i?"border-blue-500 text-white":"border-transparent text-gray-500 hover:text-gray-300"}`} onClick={()=>setTab(i)}>{t}</button>
+        ))}
+      </nav>
+
+      {/* Content */}
+      <main className="p-4 max-w-[1400px] mx-auto">
+        {/* Dashboard Overview Chart */}
+        {tab === 0 && monthlyChart.length > 0 && (
+          <div className="mb-4 bg-gray-800/40 rounded-lg p-3">
+            <h3 className="text-sm font-medium text-gray-300 mb-2">Monthly Revenue & Profit</h3>
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={monthlyChart.slice(-18)}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151"/>
+                <XAxis dataKey="month" tick={{fill:"#9ca3af",fontSize:10}} tickFormatter={m=>m?m.slice(5):""}/>
+                <YAxis tick={{fill:"#9ca3af",fontSize:10}} tickFormatter={v=>"$"+(v/1000).toFixed(0)+"k"}/>
+                <Tooltip contentStyle={{background:"#1f2937",border:"1px solid #374151",borderRadius:8,fontSize:12}} formatter={v=>fmtM(v)}/>
+                <Legend/>
+                <Bar dataKey="rev" name="Revenue" fill="#3b82f6" radius={[2,2,0,0]}/>
+                <Bar dataKey="profit" name="Profit" fill="#22c55e" radius={[2,2,0,0]}/>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+
+        {tab === 0 && <PurchasingTab cores={data.cores||[]} bundles={data.bundles||[]} vendors={data.vendors||[]} sales={data.sales||[]} fees={data.fees||[]} filter={filter}/>}
+        {tab === 1 && <CoreDetailTab cores={data.cores||[]} bundles={data.bundles||[]} vendors={data.vendors||[]} sales={data.sales||[]} fees={data.fees||[]}/>}
+        {tab === 2 && <BundleDetailTab bundles={data.bundles||[]} sales={data.sales||[]} fees={data.fees||[]} cores={data.cores||[]}/>}
+        {tab === 3 && <AIAdvisorTab cores={data.cores||[]} vendors={data.vendors||[]} sales={data.sales||[]}/>}
+      </main>
+    </div>
   );
 }
