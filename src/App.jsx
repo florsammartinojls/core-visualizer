@@ -321,20 +321,23 @@ export default function App() {
   const [filter,setFilter]=useState({active:true,ignored:false,visible:true});
   const [showSettings,setShowSettings]=useState(false);
 
+  const safeFetch=async(url)=>{
+    const r=await fetch(url,{redirect:'follow',mode:'cors'});
+    const txt=await r.text();
+    try{return JSON.parse(txt);}catch(e){throw new Error("Bad JSON from "+url.split("?")[1]+": "+txt.slice(0,100));}
+  };
+
   const loadData=useCallback(async()=>{
     setLoading(true);setError(null);
     try{
       setLoadMsg("Loading dashboard summary...");
-      const dr=await fetch(API+"?action=dashboard",{redirect:'follow'});
-      if(!dr.ok)throw new Error("Dashboard:HTTP "+dr.status);
-      const dash=await dr.json();setDashData(dash);
+      const dash=await safeFetch(API+"?action=dashboard");
+      if(dash.error)throw new Error("Dashboard: "+dash.error);
+      setDashData(dash);
 
-      setLoadMsg("Loading live data (cores, bundles, vendors)...");
-      const lr=await fetch(API+"?action=live",{redirect:'follow'});
-      if(!lr.ok)throw new Error("Live:HTTP "+lr.status);
-      const txt=await lr.text();
-      let live;try{live=JSON.parse(txt);}catch(e){throw new Error("Invalid JSON:"+txt.slice(0,200));}
-      if(live.error)throw new Error(live.error);
+      setLoadMsg("Loading live data (cores, bundles, vendors)... this may take 15-30s");
+      const live=await safeFetch(API+"?action=live");
+      if(live.error)throw new Error("Live: "+live.error);
       setData(live);
     }catch(e){setError(e.message);}
     setLoading(false);
@@ -356,8 +359,13 @@ export default function App() {
   const monthlyChart=useMemo(()=>{
     if(!dashData?.monthlyTotals)return[];
     return dashData.monthlyTotals.map(r=>{
-      const m=r.Month||r.month;const ms=typeof m==='string'?(m.length>7?m.slice(0,7):m):'';
-      return{month:ms,rev:r.Revenue||r.rev||0,profit:r.Profit||r.profit||0,units:r.Units||r.units||0};
+      let m=r.Month||r.month||"";
+      if(typeof m==='object'&&m)try{m=new Date(m).toISOString().slice(0,7);}catch(e){m="";}
+      if(typeof m==='string'&&m.length>7)m=m.slice(0,7);
+      const rev=Number(r.Revenue||r.rev)||0;
+      const profit=Number(r.Profit||r.profit)||0;
+      const units=Number(r.Units||r.units)||0;
+      return{month:String(m),rev,profit,units};
     }).filter(r=>r.month).sort((a,b)=>a.month<b.month?-1:1);
   },[dashData]);
 
