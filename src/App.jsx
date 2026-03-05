@@ -1,7 +1,9 @@
-import React, { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, LineChart, Line, ComposedChart } from "recharts";
 
 const API = "https://script.google.com/macros/s/AKfycbzZN4yMYYUQTzMW3rC2uwC1A0vh40XKDt5wph3XQO0O7RfzKHK-PNPzzmIh4H-X_lmV/exec";
+
+const sanitize=(obj)=>{if(!obj||typeof obj!=='object')return obj;if(Array.isArray(obj))return obj.map(sanitize);const o={};for(const k in obj){const v=obj[k];if(v===null||v===undefined)o[k]="";else if(typeof v==='object'&&!Array.isArray(v)){try{if(v instanceof Date)o[k]=v.toISOString();else o[k]=JSON.stringify(v);}catch(e){o[k]="";}}else if(Array.isArray(v))o[k]=v.map(sanitize);else o[k]=v;}return o;};
 
 const jsonpFetch=(url)=>{
   return new Promise((resolve,reject)=>{
@@ -16,14 +18,15 @@ const jsonpFetch=(url)=>{
   });
 };
 
-const fmt = (n, d=0) => n == null ? "—" : Number(n).toLocaleString("en-US", {minimumFractionDigits:d, maximumFractionDigits:d});
+const fmt = (n, d=0) => { if (n == null || n === "") return "—"; const v = Number(n); if (isNaN(v)) return "—"; return v.toLocaleString("en-US", {minimumFractionDigits:d, maximumFractionDigits:d}); };
 const fmtD = (n) => fmt(n, 0);
 const fmtM = (n) => "$" + fmt(n, 0);
 const fmtP = (n) => "$" + fmt(n, 2);
+const safe = (v) => { if (v == null) return ""; if (typeof v === "object") { try { return v instanceof Date ? v.toISOString().slice(0,10) : JSON.stringify(v); } catch(e) { return ""; } } return String(v); };
 function docColor(doc, lt, buf) { if (doc <= lt) return "#ef4444"; if (doc <= lt + (buf||14)) return "#f59e0b"; return "#22c55e"; }
 function statusLabel(doc, lt, buf) { if (doc <= lt) return "critical"; if (doc <= lt + (buf||14)) return "warning"; return "healthy"; }
 function StatusDot({status}) { const c = status === "critical" ? "bg-red-500" : status === "warning" ? "bg-yellow-500" : "bg-green-500"; return <span className={`inline-block w-2.5 h-2.5 rounded-full ${c}`}/>; }
-function trend(d7, dsr) { if (!dsr) return "—"; const p = ((d7-dsr)/dsr*100); if (p>5) return <span className="text-green-400">▲{p.toFixed(0)}%</span>; if (p<-5) return <span className="text-red-400">▼{Math.abs(p).toFixed(0)}%</span>; return <span className="text-gray-400">●{p.toFixed(0)}%</span>; }
+function trend(d7, dsr) { if (!dsr) return "—"; const p = ((d7-dsr)/dsr*100); if (p>5) return <span className="text-green-400">{"▲"}{p.toFixed(0)}{"%"}</span>; if (p<-5) return <span className="text-red-400">{"▼"}{Math.abs(p).toFixed(0)}{"%"}</span>; return <span className="text-gray-400">{"●"}{p.toFixed(0)}{"%"}</span>; }
 function InfoTip({text}) { const [o,setO]=useState(false); return <span className="relative inline-block ml-1"><button onClick={()=>setO(!o)} className="text-gray-500 hover:text-gray-300 text-xs">ⓘ</button>{o&&<div className="absolute z-50 bg-gray-800 text-xs text-gray-200 p-2 rounded shadow-lg w-48 -left-20 top-5 border border-gray-600" onClick={()=>setO(false)}>{text}</div>}</span>; }
 function SortTh({label,field,sort,setSort,info,className=""}) { const a=sort.field===field; const ar=a?(sort.dir==="asc"?" ↑":" ↓"):""; return <th className={`px-2 py-1.5 text-left text-xs font-medium text-gray-400 cursor-pointer hover:text-white select-none whitespace-nowrap ${className}`} onClick={()=>setSort({field,dir:a&&sort.dir==="desc"?"asc":"desc"})}>{label}{ar}{info&&<InfoTip text={info}/>}</th>; }
 function Spinner({msg}) { return <div className="flex flex-col items-center justify-center h-64 gap-3"><div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"/><p className="text-gray-400 text-sm">{msg||"Loading..."}</p></div>; }
@@ -201,7 +204,7 @@ function CoreDetailTab({cores,bundles,vendors,sales,fees,onBundleClick,dashData}
         <input className="w-full bg-gray-800 text-white text-sm px-3 py-2 rounded-lg border border-gray-700" placeholder="Search cores by ID or title..." value={search} onChange={e=>setSearch(e.target.value)}/>
         {filtered.length>0&&<div className="absolute z-40 w-full bg-gray-800 border border-gray-700 rounded-lg mt-1 max-h-60 overflow-y-auto">{filtered.map(c=><button key={c.id} className="w-full text-left px-3 py-2 hover:bg-gray-700 text-sm flex gap-2" onClick={()=>selectCore(c)}><span className="text-blue-400 font-mono">{c.id}</span><span className="text-gray-300 truncate">{c.ti}</span></button>)}</div>}
       </div>
-      {dashData&&dashData.length>0&&<div className="bg-gray-800/40 rounded-lg p-3"><h3 className="text-sm font-medium text-gray-300 mb-2">Monthly Revenue & Profit</h3><ResponsiveContainer width="100%" height={220}><BarChart data={dashData.slice(-18)}><CartesianGrid strokeDasharray="3 3" stroke="#374151"/><XAxis dataKey="month" tick={{fill:"#9ca3af",fontSize:10}} tickFormatter={m=>m?m.slice(5):""}/><YAxis tick={{fill:"#9ca3af",fontSize:10}} tickFormatter={v=>"$"+(v/1000).toFixed(0)+"k"}/><Tooltip contentStyle={{background:"#1f2937",border:"1px solid #374151",borderRadius:8,fontSize:12}} formatter={v=>fmtM(v)}/><Legend/><Bar dataKey="rev" name="Revenue" fill="#3b82f6" radius={[2,2,0,0]}/><Bar dataKey="profit" name="Profit" fill="#22c55e" radius={[2,2,0,0]}/></BarChart></ResponsiveContainer></div>}
+      {dashData&&dashData.length>0&&<div className="bg-gray-800/40 rounded-lg p-3"><h3 className="text-sm font-medium text-gray-300 mb-2">Monthly Revenue & Profit</h3><ResponsiveContainer width="100%" height={220}><BarChart data={dashData.slice(-18)}><CartesianGrid strokeDasharray="3 3" stroke="#374151"/><XAxis dataKey="month" tick={{fill:"#9ca3af",fontSize:10}} tickFormatter={m=>{const s=String(m||"");return s.length>=5?s.slice(5):s;}}/><YAxis tick={{fill:"#9ca3af",fontSize:10}} tickFormatter={v=>"$"+(Number(v||0)/1000).toFixed(0)+"k"}/><Tooltip contentStyle={{background:"#1f2937",border:"1px solid #374151",borderRadius:8,fontSize:12}} formatter={v=>"$"+fmt(v,0)}/><Legend/><Bar dataKey="rev" name="Revenue" fill="#3b82f6" radius={[2,2,0,0]}/><Bar dataKey="profit" name="Profit" fill="#22c55e" radius={[2,2,0,0]}/></BarChart></ResponsiveContainer></div>}
       <p className="text-gray-500 text-center py-8">Search a core above, or click a Core ID in the Purchasing tab</p>
     </div>
   );
@@ -232,7 +235,7 @@ function CoreDetailTab({cores,bundles,vendors,sales,fees,onBundleClick,dashData}
       <div className="bg-gray-800/40 rounded-lg p-3"><h3 className="text-sm font-medium text-gray-300 mb-2">Inventory Pipeline</h3><div className="flex gap-1 items-end h-28">{pipeline.map(p=><div key={p.label} className="flex-1 flex flex-col items-center gap-1"><span className="text-xs text-gray-300 font-medium">{fmtD(p.val)}</span><div className="w-full rounded-t" style={{height:Math.max(4,p.val/maxP*80)+"px",background:"#3b82f6"}}/><span className="text-xs text-gray-500 whitespace-nowrap">{p.label}</span></div>)}</div></div>
 
       {loading&&<Spinner msg="Loading history..."/>}
-      {yoyData.length>0&&<div className="bg-gray-800/40 rounded-lg p-3"><h3 className="text-sm font-medium text-gray-300 mb-2">Monthly DSR (Year over Year)</h3><ResponsiveContainer width="100%" height={220}><ComposedChart data={yoyData}><CartesianGrid strokeDasharray="3 3" stroke="#374151"/><XAxis dataKey="mo" tick={{fill:"#9ca3af",fontSize:11}} tickFormatter={m=>["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][m]||m}/><YAxis tick={{fill:"#9ca3af",fontSize:11}}/><Tooltip contentStyle={{background:"#1f2937",border:"1px solid #374151",borderRadius:8,fontSize:12}} labelFormatter={m=>["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][m]||m}/><Legend/>{years.map((yr,i)=><Bar key={yr} dataKey={"dsr_"+yr} name={String(yr)} fill={yCols[i%yCols.length]} radius={[2,2,0,0]}/>)}{years.map((yr,i)=>yoyData.some(r=>r["oos_"+yr]>0)?<Line key={"o"+yr} dataKey={"oos_"+yr} name={yr+" OOS"} stroke="#ef4444" strokeWidth={2} dot={false} strokeDasharray="4 2"/>:null)}</ComposedChart></ResponsiveContainer></div>}
+      {yoyData.length>0&&<div className="bg-gray-800/40 rounded-lg p-3"><h3 className="text-sm font-medium text-gray-300 mb-2">Monthly DSR (Year over Year)</h3><ResponsiveContainer width="100%" height={220}><ComposedChart data={yoyData}><CartesianGrid strokeDasharray="3 3" stroke="#374151"/><XAxis dataKey="mo" tick={{fill:"#9ca3af",fontSize:11}} tickFormatter={m=>["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][m]||m}/><YAxis tick={{fill:"#9ca3af",fontSize:11}}/><Tooltip contentStyle={{background:"#1f2937",border:"1px solid #374151",borderRadius:8,fontSize:12}} labelFormatter={m=>["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][Number(m)]||String(m)}/><Legend/>{years.map((yr,i)=><Bar key={yr} dataKey={"dsr_"+yr} name={String(yr)} fill={yCols[i%yCols.length]} radius={[2,2,0,0]}/>)}{years.map((yr,i)=>yoyData.some(r=>r["oos_"+yr]>0)?<Line key={"o"+yr} dataKey={"oos_"+yr} name={yr+" OOS"} stroke="#ef4444" strokeWidth={2} dot={false} strokeDasharray="4 2"/>:null)}</ComposedChart></ResponsiveContainer></div>}
       {chartData.length>0&&<div className="bg-gray-800/40 rounded-lg p-3"><h3 className="text-sm font-medium text-gray-300 mb-2">DOC & Inventory</h3><ResponsiveContainer width="100%" height={200}><ComposedChart data={chartData}><CartesianGrid strokeDasharray="3 3" stroke="#374151"/><XAxis dataKey="month" tick={{fill:"#9ca3af",fontSize:10}} tickFormatter={m=>typeof m==='string'?m.slice(5):m}/><YAxis yAxisId="d" tick={{fill:"#9ca3af",fontSize:11}}/><YAxis yAxisId="i" orientation="right" tick={{fill:"#9ca3af",fontSize:11}}/><Tooltip contentStyle={{background:"#1f2937",border:"1px solid #374151",borderRadius:8,fontSize:12}}/><Legend/><Line yAxisId="d" dataKey="doc" name="DOC" stroke="#f59e0b" strokeWidth={2} dot={false}/><Bar yAxisId="i" dataKey="own" name="All-In Own" fill="#3b82f6" opacity={0.5} radius={[2,2,0,0]}/><Bar yAxisId="i" dataKey="fba" name="FBA" fill="#8b5cf6" opacity={0.5} radius={[2,2,0,0]}/></ComposedChart></ResponsiveContainer></div>}
 
       {coreBundles.length>0&&<div className="bg-gray-800/40 rounded-lg p-3"><h3 className="text-sm font-medium text-gray-300 mb-2">Bundles ({coreBundles.length})</h3><div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr className="text-gray-500"><th className="text-left px-2 py-1">JLS</th><th className="text-left px-2 py-1">Title</th><th className="text-right px-2 py-1">DSR</th><th className="text-right px-2 py-1">DOC</th><th className="text-right px-2 py-1">FIB Inv</th><th className="text-right px-2 py-1">Price</th><th className="text-right px-2 py-1">GP</th><th className="text-right px-2 py-1">LT Profit</th></tr></thead><tbody className="divide-y divide-gray-800/30">{coreBundles.map(b=>{const f=feesMap[b.j]||{};const s=salesMap[b.j]||{};return(<tr key={b.j} className="hover:bg-gray-800/30"><td className="px-2 py-1 font-mono text-blue-400 cursor-pointer hover:underline" onClick={()=>onBundleClick&&onBundleClick(b.j)}>{b.j}</td><td className="px-2 py-1 text-gray-300 max-w-[180px] truncate">{b.t}</td><td className="px-2 py-1 text-right">{fmt(b.fbaDsr,1)}</td><td className="px-2 py-1 text-right">{fmtD(b.doc)}</td><td className="px-2 py-1 text-right">{fmtD(b.fibInv)}</td><td className="px-2 py-1 text-right">{fmtP(f.pr)}</td><td className="px-2 py-1 text-right text-green-400">{fmtP(f.gp)}</td><td className="px-2 py-1 text-right text-green-400">{fmtM(s.ltP)}</td></tr>);})}</tbody></table></div></div>}
@@ -340,12 +343,12 @@ export default function App() {
       setLoadMsg("Loading dashboard summary...");
       const dash=await jsonpFetch(API+"?action=dashboard");
       if(dash&&dash.error)throw new Error("Dashboard: "+dash.error);
-      setDashData(dash);
+      setDashData(sanitize(dash));
 
       setLoadMsg("Loading live data... this takes 15-30 seconds, please wait");
       const live=await jsonpFetch(API+"?action=live");
       if(live&&live.error)throw new Error("Live: "+live.error);
-      setData(live);
+      setData(sanitize(live));
     }catch(e){setError(String(e.message||e));}
     setLoading(false);
   },[]);
